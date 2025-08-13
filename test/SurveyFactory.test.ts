@@ -1,86 +1,86 @@
 import { expect } from "chai";
-import { Wallet, Provider, ContractFactory } from "zksync-ethers";
-import * as dotenv from "dotenv";
 import * as hre from "hardhat";
-
+import {
+  Provider,
+  Wallet,
+  ContractFactory,
+  Contract as ZkContract,
+} from "zksync-ethers";
+import dotenv from "dotenv";
 dotenv.config();
 
-describe("SurveyFactory with constructor deployment on zkSync", function () {
+describe("SurveyFactory minimal on zkSync", function () {
   this.timeout(180_000);
 
-  let owner: Wallet;
-  let voter1: Wallet;
-  let voter2: Wallet;
-  let zkProvider: Provider;
+  it("deploys Survey via Factory and sets fields", async () => {
+    const zkProvider = new Provider(hre.network.config.url);
+    const owner = new Wallet(process.env.WALLET_PRIVATE_KEY!, zkProvider);
 
-  let factory: any;
-
-  before(async () => {
-    zkProvider = new Provider(hre.network.config.url);
-    owner = new Wallet(process.env.WALLET_PRIVATE_KEY!, zkProvider);
-
-    // Генерация временных кошельков для голосующих
-    voter1 = Wallet.createRandom().connect(zkProvider);
-    voter2 = Wallet.createRandom().connect(zkProvider);
-
-    // Пополнение баланса тестовых кошельков
-    const fundAmount = hre.ethers.parseEther("0.005");
-    await owner.sendTransaction({ to: voter1.address, value: fundAmount });
-    await owner.sendTransaction({ to: voter2.address, value: fundAmount });
-
-    // Загрузка артефактов
-    const SurveyArtifact = await hre.artifacts.readArtifact("Survey");
     const FactoryArtifact = await hre.artifacts.readArtifact("SurveyFactory");
+    const SurveyArtifact = await hre.artifacts.readArtifact("Survey");
 
-    // Деплой SurveyFactory
     const FactoryFactory = new ContractFactory(
       FactoryArtifact.abi,
       FactoryArtifact.bytecode,
       owner
     );
-    factory = await FactoryFactory.deploy();
+    const factory = await FactoryFactory.deploy();
     await factory.waitForDeployment();
-  });
+    const factoryAddr = await factory.getAddress();
 
-  it("should deploy a Survey via new and allow voting", async () => {
-    const question = "Which protocol do you trust the most?";
-    const options = ["zkSync", "StarkNet", "Linea"];
     const now = Math.floor(Date.now() / 1000);
-    const startTime = now + 5;
-    const endTime = startTime + 60;
+    const startTime = now + 10;
+    const endTime = startTime + 3600;
 
-    const tx = await factory.createSurvey(
-      question,
-      options,
+    // В фабрику передаем строку (если в твоей фабрике внутри делается keccak256),
+    // но сверяем на контракте bytes32.
+    const metaHashUrl = "ipfs://bafy...meta.json";
+    const metaHash32 = hre.ethers.keccak256(
+      hre.ethers.toUtf8Bytes(metaHashUrl)
+    );
+
+    // Вызов createSurvey с factoryDeps (обязательно на zkSync)
+    const ifaceFactory = new hre.ethers.Interface(FactoryArtifact.abi);
+    const calldataCreate = ifaceFactory.encodeFunctionData("createSurvey", [
+      0, // SurveyType.MULTIPLE_CHOICE
       startTime,
       endTime,
-      {
-        value: hre.ethers.parseEther("0.01"),
-      }
+      metaHashUrl, // строка; внутри фабрики должно быть: bytes32 meta = keccak256(bytes(metaHashUrl))
+    ]);
+
+    const txCreate = await owner.sendTransaction({
+      to: factoryAddr,
+      data: calldataCreate,
+      gasLimit: 8_000_000,
+      customData: { factoryDeps: [SurveyArtifact.bytecode] },
+    });
+    const rcpt = await txCreate.wait();
+
+    // Достаём адрес Survey из события
+    let surveyAddr: string | undefined;
+    for (const l of rcpt.logs) {
+      try {
+        const parsed = ifaceFactory.parseLog(l);
+        if (parsed?.name === "SurveyDeployed") {
+          surveyAddr = parsed.args?.survey as string;
+          break;
+        }
+      } catch {}
+    }
+    expect(surveyAddr, "Survey address not found").to.match(
+      /^0x[a-fA-F0-9]{40}$/
     );
-    const receipt = await tx.wait();
 
-    const event = receipt.logs.find(
-      (log: any) => log.fragment?.name === "SurveyCreated"
-    );
-    const cloneAddress = event?.args?.surveyAddress;
-    expect(typeof cloneAddress).to.equal("string");
-    expect(cloneAddress).to.match(/^0x[a-fA-F0-9]{40}$/);
+    // Проверяем поля
+    const survey = new ZkContract(surveyAddr!, SurveyArtifact.abi, owner);
+    expect(await survey.creator()).to.equal(owner.address);
+    expect(await survey.startTime()).to.equal(BigInt(startTime));
+    expect(await survey.endTime()).to.equal(BigInt(endTime));
+    expect(await survey.surveyType()).to.equal(0n);
+    expect(await survey.metaHash()).to.equal(metaHash32); // сверяем bytes32, не строку
 
-    const clone = await hre.ethers.getContractAt("Survey", cloneAddress, owner);
-
-    expect(await clone.question()).to.equal(question);
-    expect(await clone.startTime()).to.equal(BigInt(startTime));
-    expect(await clone.endTime()).to.equal(BigInt(endTime));
-
-    console.log("⏳ Ждём старта голосования...");
-    await new Promise((resolve) => setTimeout(resolve, 6000));
-
-    await clone.connect(voter1).vote(0);
-
-    const optionText = await clone.options(0);
-    const count = await clone.votes(0);
-    expect(optionText).to.equal("zkSync");
+    // Счётчик фабрики
+    const count = await factory.getSurveysCount();
     expect(count).to.equal(1n);
   });
 });

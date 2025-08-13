@@ -1,31 +1,29 @@
 import { expect } from "chai";
-import { Deployer } from "@matterlabs/hardhat-zksync-deploy";
+import { Wallet, Provider, ContractFactory } from "zksync-ethers";
 import * as hre from "hardhat";
-import * as dotenv from "dotenv";
-import { Wallet, Provider } from "zksync-ethers";
-
+import dotenv from "dotenv";
 dotenv.config();
 
 describe("Greeter contract", function () {
-  this.timeout(80000);
   it("Should return the new greeting once it's changed", async function () {
-    const provider = new Provider(hre.network.config.url); // берём URL из hardhat.config.ts
+    const provider = new Provider(hre.network.config.url);
     const wallet = new Wallet(process.env.WALLET_PRIVATE_KEY!, provider);
 
-    const deployer = new Deployer(hre, wallet);
-    const artifact = await deployer.loadArtifact("Greeter");
+    const artifact = await hre.artifacts.readArtifact("Greeter");
+    const greeterFactory = new ContractFactory(
+      artifact.abi,
+      artifact.bytecode,
+      wallet
+    );
 
-    // Деплой контракта с начальным greeting
-    const greeter = await deployer.deploy(artifact, ["Hello from zkSync!"]);
+    const greeter = await greeterFactory.deploy("Hello, world!");
+    await greeter.waitForDeployment();
 
-    // Проверка начального greeting
-    expect(await greeter.greet()).to.equal("Hello from zkSync!");
+    expect(await greeter.greet()).to.equal("Hello, world!");
 
-    // Отправляем транзакцию и ждём подтверждения
-    const tx = await greeter.setGreeting("New greeting from test");
+    const tx = await greeter.setGreeting("Hi zkSync!");
     await tx.wait();
 
-    // Проверяем обновлённое значение
-    expect(await greeter.greet()).to.equal("New greeting from test");
+    expect(await greeter.greet()).to.equal("Hi zkSync!");
   });
 });

@@ -1,103 +1,96 @@
 import { expect } from "chai";
 import * as hre from "hardhat";
-import * as dotenv from "dotenv";
-import { Wallet, Provider, ContractFactory } from "zksync-ethers";
-import { ethers } from "ethers";
-import { strict as assert } from "assert";
-
+import {
+  Provider,
+  Wallet,
+  ContractFactory,
+  Contract as ZkContract,
+} from "zksync-ethers";
+import dotenv from "dotenv";
 dotenv.config();
 
-describe("Survey contract full flow (live testnet)", function () {
-  this.timeout(300000);
+async function waitUntilTs(p: Provider, targetTs: number, stepMs = 3000) {
+  while (true) {
+    const blk = await p.getBlock("latest");
+    const now = Number(blk.timestamp);
+    if (now >= targetTs) break;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+}
 
-  let wallet: Wallet;
-  let provider: Provider;
+describe("Survey minimal flow", function () {
+  this.timeout(300_000); // 5 минут на всякий
 
-  before(async () => {
-    provider = new Provider(hre.network.config.url);
-    wallet = new Wallet(process.env.WALLET_PRIVATE_KEY!, provider);
-  });
+  it("Should allow adding one question, voting, and finalizing", async function () {
+    const provider = new Provider(hre.network.config.url);
+    const owner = new Wallet(process.env.WALLET_PRIVATE_KEY!, provider);
+    const voter = Wallet.createRandom().connect(provider);
 
-  const wait = async (seconds: number) => {
-    console.log(`⏳ Ждём ${seconds} сек...`);
-    return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-  };
+    // Газ для второго кошелька
+    await (
+      await owner.sendTransaction({
+        to: voter.address,
+        value: hre.ethers.parseEther("0.001"),
+      })
+    ).wait();
 
-  const deploySurvey = async (
-    question: string,
-    options: string[],
-    startTime: number,
-    endTime: number,
-    value: bigint
-  ) => {
-    const artifact = await hre.artifacts.readArtifact("Survey");
-    const factory = new ContractFactory(
-      artifact.abi,
-      artifact.bytecode,
-      wallet
+    const SurveyArtifact = await hre.artifacts.readArtifact("Survey");
+    const SurveyFactory = new ContractFactory(
+      SurveyArtifact.abi,
+      SurveyArtifact.bytecode,
+      owner
     );
-    const survey = await factory.deploy(question, options, startTime, endTime, {
-      value,
-    });
+
+    const now = Math.floor(Date.now() / 1000);
+    const startTime = now + 45;
+    const endTime = startTime + 120;
+
+    // metaHash в контракте bytes32 => хэшируем строку
+    const metaHashUrl = "ipfs://bafy...meta.json";
+    const metaHash32 = hre.ethers.keccak256(
+      hre.ethers.toUtf8Bytes(metaHashUrl)
+    );
+
+    const survey = await SurveyFactory.deploy(
+      0,
+      startTime,
+      endTime,
+      owner.address,
+      metaHash32
+    );
     await survey.waitForDeployment();
-    return survey;
-  };
 
-  it("Should allow creator to refund if no votes were cast", async () => {
-    const now = (await provider.getBlock("latest")).timestamp;
-    const start = now + 60;
-    const end = now + 120;
-    const value = ethers.parseEther("0.01");
-
-    const survey = await deploySurvey(
-      "Is this refundable?",
-      ["Yes", "No"],
-      start,
-      end,
-      value
+    const zkSurvey = new ZkContract(
+      await survey.getAddress(),
+      SurveyArtifact.abi,
+      owner
     );
 
-    console.log("Опрос без голосов. Ожидаем завершения голосования...");
-    await wait(130);
+    // Вопрос
+    await (
+      await zkSurvey.addQuestion("Do you like zkSync?", ["Yes", "No"], 0)
+    ).wait();
 
-    const finalizeTx = await survey.finalize();
-    await finalizeTx.wait();
+    // Ждём старта по L2-времени
+    await waitUntilTs(provider as Provider, startTime + 2);
 
-    console.log("Финализировали. Пробуем вернуть средства создателю...");
-    const balanceBefore = await wallet.getBalance();
+    // Голос
+    await (await zkSurvey.connect(voter).vote([[0]])).wait();
+    expect(await zkSurvey.getParticipantsCount()).to.equal(1n);
 
-    const refundTx = await survey.refundCreator();
-    const receipt = await refundTx.wait();
+    // Ждём конца окна по L2-времени
+    await waitUntilTs(provider as Provider, endTime + 2);
 
-    let gasUsed: bigint = 0n;
+    // Финализация (два bytes32)
+    const rulesHash = hre.ethers.encodeBytes32String("rules-v1");
+    const resultsHash = hre.ethers.encodeBytes32String("results-v1");
+    await (await zkSurvey.finalize(rulesHash, resultsHash)).wait();
 
-    if (refundTx.gasPrice) {
-      gasUsed =
-        BigInt(receipt.gasUsed.toString()) *
-        BigInt(refundTx.gasPrice.toString());
-    } else {
-      console.warn(
-        "⚠️ gasPrice is undefined — skipping gas cost deduction from expectation."
-      );
-    }
-
-    const balanceAfter = await wallet.getBalance();
-
-    const expectedMin = balanceBefore + value - gasUsed;
-    const tolerance = ethers.parseEther("0.001");
-
-    assert(
-      balanceAfter >= expectedMin - tolerance,
-      `Balance after refund is less than expected: got ${balanceAfter}, expected at least ${
-        expectedMin - tolerance
-      }`
-    );
-
-    const rewardPool = await survey.rewardPool();
-    assert.equal(
-      BigInt(rewardPool),
-      0n,
-      "Reward pool should be empty after refund"
-    );
+    // Проверки
+    expect(await zkSurvey.finalized()).to.equal(true);
+    expect(await zkSurvey.surveyType()).to.equal(0n);
+    expect(await zkSurvey.metaHash()).to.equal(metaHash32);
+    expect(await zkSurvey.startTime()).to.equal(BigInt(startTime));
+    expect(await zkSurvey.endTime()).to.equal(BigInt(endTime));
   });
 });

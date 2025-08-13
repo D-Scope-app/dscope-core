@@ -9,59 +9,95 @@ contract Survey {
         string text;
         string[] options;
         SelectionType selectionType;
-        mapping(address => uint[]) responses;       
-        mapping(uint => uint) votesPerOption;       
+        mapping(address => uint[]) responses;
+        mapping(uint => uint) votesPerOption;
     }
 
+    // --- Core metadata/state
     address public creator;
     SurveyType public surveyType;
-    uint public startTime;
-    uint public endTime;
+    uint256 public startTime;
+    uint256 public endTime;
     bool public finalized;
 
+    // --- Off-chain settlement anchors (for indexer & payouts)
+    bytes32 public metaHash;      // hash of public survey metadata (IPFS/GitHub JSON)
+    bytes32 public rulesHash;     // hash of reward rules JSON used for accruals
+    bytes32 public resultsHash;   // hash of aggregated results snapshot
+    uint64  public claimOpenAt;   // informational: when off-chain claims can start
+    uint64  public claimDeadline; // informational: when off-chain claims should end
+
+    // --- Questions & participation
     Question[] public questions;
     address[] public participants;
     mapping(address => bool) public hasParticipated;
 
-    uint public rewardPool;
-    uint public rewardPerParticipant;
-
+    // --- Events
+    event SurveyCreated(address indexed survey, address indexed creator, bytes32 metaHash);
+    event QuestionAdded(uint indexed index, string text);
     event Voted(address indexed voter);
-    event Finalized(uint totalParticipants, uint rewardPerParticipant);
-    event Claimed(address indexed voter, uint amount);
-    event Refunded(address indexed creator, uint amount);
+    event Finalized(
+        address indexed survey,
+        uint256 totalParticipants,
+        bytes32 rulesHash,
+        bytes32 resultsHash,
+        uint64 claimOpenAt,
+        uint64 claimDeadline
+    );
+
+    // --- Modifiers
+    modifier onlyCreator() {
+        require(msg.sender == creator, "Only creator");
+        _;
+    }
+
+    modifier beforeStart() {
+        require(block.timestamp < startTime, "Already started");
+        _;
+    }
 
     constructor(
         SurveyType _surveyType,
-        string[] memory _questionTexts,
-        string[][] memory _optionsList,
-        SelectionType[] memory _selectionTypes,
-        uint _startTime,
-        uint _endTime
-    ) payable {
-        require(_questionTexts.length == _optionsList.length, "Mismatch in questions/options");
-        require(_questionTexts.length == _selectionTypes.length, "Mismatch in selectionTypes");
+        uint256 _startTime,
+        uint256 _endTime,
+        address _creator,
+        bytes32 _metaHash
+    ) {
         require(_startTime < _endTime, "Invalid time window");
-        require(_questionTexts.length > 0 && _questionTexts.length <= 10, "Invalid number of questions");
-
-        creator = msg.sender;
+        creator = _creator;
         surveyType = _surveyType;
         startTime = _startTime;
         endTime = _endTime;
-        rewardPool = msg.value;
+        metaHash = _metaHash;
 
-        for (uint i = 0; i < _questionTexts.length; i++) {
-            Question storage q = questions.push();
-            q.text = _questionTexts[i];
-            q.options = _optionsList[i];
-            q.selectionType = _selectionTypes[i];
+        emit SurveyCreated(address(this), _creator, _metaHash);
+    }
+
+    /// @notice Add a question before the survey starts
+    function addQuestion(
+        string calldata _text,
+        string[] calldata _options,
+        SelectionType _selectionType
+    ) external onlyCreator beforeStart {
+        require(bytes(_text).length > 0, "Empty question");
+        require(_options.length > 0 && _options.length <= 32, "Invalid options count");
+        require(questions.length < 50, "Too many questions");
+
+        Question storage q = questions.push();
+        q.text = _text;
+        q.selectionType = _selectionType;
+        for (uint i = 0; i < _options.length; i++) {
+            q.options.push(_options[i]);
         }
+
+        emit QuestionAdded(questions.length - 1, _text);
     }
 
     function vote(uint[][] calldata selectedOptionsPerQuestion) external {
         require(block.timestamp >= startTime, "Survey not started");
         require(block.timestamp <= endTime, "Survey ended");
         require(!hasParticipated[msg.sender], "Already participated");
+        require(questions.length > 0, "No questions");
         require(selectedOptionsPerQuestion.length == questions.length, "Invalid number of responses");
 
         hasParticipated[msg.sender] = true;
@@ -83,55 +119,58 @@ contract Survey {
                 q.votesPerOption[optionIndex]++;
             }
 
+            // Persist user's selections for this question
             q.responses[msg.sender] = selections;
         }
 
         emit Voted(msg.sender);
     }
 
-    function finalize() external {
-        require(block.timestamp > endTime, "Survey still active");
+    // ===== Finalization =====
+
+    /// @notice Finalize with default (informational) claim window = 0/0
+    function finalize(bytes32 _rulesHash, bytes32 _resultsHash) external {
+        _finalizeCommon(_rulesHash, _resultsHash, 0, 0);
+    }
+
+    /// @notice Finalize with explicit (informational) claim window
+    function finalize(
+        bytes32 _rulesHash,
+        bytes32 _resultsHash,
+        uint64 _claimOpenAt,
+        uint64 _claimDeadline
+    ) external {
+        _finalizeCommon(_rulesHash, _resultsHash, _claimOpenAt, _claimDeadline);
+    }
+
+    function _finalizeCommon(
+        bytes32 _rulesHash,
+        bytes32 _resultsHash,
+        uint64 _claimOpenAt,
+        uint64 _claimDeadline
+    ) internal onlyCreator {
+        require(block.timestamp >= endTime, "Survey still active");
         require(!finalized, "Already finalized");
+        require(questions.length > 0, "No questions");
 
         finalized = true;
 
-        uint totalParticipants = participants.length;
-        if (totalParticipants > 0) {
-            rewardPerParticipant = rewardPool / totalParticipants;
-        }
+        rulesHash = _rulesHash;
+        resultsHash = _resultsHash;
+        claimOpenAt = _claimOpenAt;
+        claimDeadline = _claimDeadline;
 
-        emit Finalized(totalParticipants, rewardPerParticipant);
+        emit Finalized(
+            address(this),
+            participants.length,
+            _rulesHash,
+            _resultsHash,
+            _claimOpenAt,
+            _claimDeadline
+        );
     }
 
-    function claimReward() external {
-        require(finalized, "Survey not finalized");
-        require(hasParticipated[msg.sender], "Not a participant");
-        require(rewardPerParticipant > 0, "No rewards available");
-
-        hasParticipated[msg.sender] = false;
-        rewardPool -= rewardPerParticipant;
-
-        (bool success, ) = payable(msg.sender).call{value: rewardPerParticipant}("");
-        require(success, "Transfer failed");
-
-        emit Claimed(msg.sender, rewardPerParticipant);
-    }
-
-    function refundCreator() external {
-        require(finalized, "Survey not finalized");
-        require(participants.length == 0, "Participants exist");
-        require(msg.sender == creator, "Only creator");
-
-        uint amount = rewardPool;
-        rewardPool = 0;
-
-        (bool success, ) = payable(creator).call{value: amount}("");
-        require(success, "Refund failed");
-
-        emit Refunded(creator, amount);
-    }
-
-    // ========== View Functions ==========
+    // ===== View helpers =====
 
     function getQuestion(uint index) external view returns (
         string memory text,
@@ -160,9 +199,11 @@ contract Survey {
         return questions[questionIndex].responses[user];
     }
 
-    // ========== Receive Fallback ==========
+    function getParticipantsCount() public view returns (uint) {
+        return participants.length;
+    }
 
-    receive() external payable {
-        rewardPool += msg.value;
+    function getQuestionsCount() external view returns (uint) {
+        return questions.length;
     }
 }
