@@ -1,25 +1,28 @@
-name: Indexer
+name: Indexer → Public API
 on:
   schedule:
-    - cron: "*/15 * * * *" # каждые 15 минут
-  workflow_dispatch: # запуск вручную
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
+      contents: read
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout dscope-core
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Install deps
         run: npm ci
 
-      - name: Run indexer
+      - name: Run indexer (build JSON)
         env:
           RPC: https://sepolia.era.zksync.dev
           FACTORY: 0x2e1b2155e8731fafed4e4352a963281bba73f3d0
@@ -28,14 +31,34 @@ jobs:
           node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
           npx ts-node backend/ci-indexer.ts
 
-      - name: Build surveys.list.json
+      - name: Produce surveys.list.json
         run: |
           node -e "const fs=require('fs');const p='public/api/surveys.json';if(fs.existsSync(p)){const m=JSON.parse(fs.readFileSync(p,'utf8'));const arr=Object.entries(m).map(([address,s])=>({address,...s}));fs.writeFileSync('public/api/surveys.list.json',JSON.stringify(arr,null,2));console.log('wrote',arr.length)}"
 
-      - name: Commit & push API
+      - name: Push to dscope-api
+        env:
+          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/api
-          git commit -m "chore: update static API" || echo "no changes"
-          git push
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          rm -rf public-repo
+          git clone https://x-access-token:${GH_TOKEN}@github.com/D-Scope-app/dscope-api.git public-repo
+
+          mkdir -p public-repo/api
+          cp -r public/api/* public-repo/api/ || true
+
+          if [ ! -f public-repo/index.html ]; then
+            cat > public-repo/index.html <<'HTML'
+<!doctype html><meta charset="utf-8"><title>D-Scope API</title>
+<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">
+<h1>D-Scope API</h1>
+<p><a href="./api/surveys.json">api/surveys.json</a> • <a href="./api/surveys.list.json">api/surveys.list.json</a></p>
+</body>
+HTML
+          fi
+
+          cd public-repo
+          git add .
+          git commit -m "update: static API" || echo "no changes"
+          git push origin HEAD:main
