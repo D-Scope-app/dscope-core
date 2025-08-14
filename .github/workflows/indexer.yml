@@ -1,0 +1,41 @@
+name: Indexer
+on:
+  schedule:
+    - cron: "*/15 * * * *" # каждые 15 минут
+  workflow_dispatch: # запуск вручную
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run indexer
+        env:
+          RPC: https://sepolia.era.zksync.dev
+          FACTORY: 0x2e1b2155e8731fafed4e4352a963281bba73f3d0
+          START_BLOCK: 5640000
+        run: |
+          node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
+          npx ts-node backend/ci-indexer.ts
+
+      - name: Build surveys.list.json
+        run: |
+          node -e "const fs=require('fs');const p='public/api/surveys.json';if(fs.existsSync(p)){const m=JSON.parse(fs.readFileSync(p,'utf8'));const arr=Object.entries(m).map(([address,s])=>({address,...s}));fs.writeFileSync('public/api/surveys.list.json',JSON.stringify(arr,null,2));console.log('wrote',arr.length)}"
+
+      - name: Commit & push API
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/api
+          git commit -m "chore: update static API" || echo "no changes"
+          git push
