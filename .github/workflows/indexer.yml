@@ -2,9 +2,9 @@ name: Indexer to Public API
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # каждые 15 минут
-  workflow_dispatch: # ручной запуск из Actions
-  push: # можно убрать позже, когда всё стабильно
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+  push:
 
 jobs:
   push:
@@ -26,27 +26,24 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # ---- НОВОЕ: проверяем, что секрет с приватным ключом валиден
-      - name: Validate secrets (private key)
+      # 👇 важные шаги под твой hardhat.config.ts
+      - name: Validate WALLET_PRIVATE_KEY (length check)
         run: |
-          KEY="${{ secrets.ZKSYNC_PRIVATE_KEY }}"
+          KEY="${{ secrets.WALLET_PRIVATE_KEY }}"
           if [ -z "$KEY" ]; then
-            echo "::error::Missing secret ZKSYNC_PRIVATE_KEY in repo Settings → Secrets and variables → Actions"
-            exit 1
+            echo "::error::Missing repo secret WALLET_PRIVATE_KEY"; exit 1
           fi
-          LEN=${#KEY}
-          if [ $LEN -ne 66 ]; then
-            echo "::error::ZKSYNC_PRIVATE_KEY must be 66 chars (0x + 64 hex). Got length: $LEN"
-            exit 1
+          L=${#KEY}
+          if [ $L -ne 66 ]; then
+            echo "::error::WALLET_PRIVATE_KEY must be 66 chars (0x + 64 hex). Got $L"; exit 1
           fi
           echo "Private key format looks OK."
 
-      # ---- НОВОЕ: создаём .env для hardhat/dotenv
-      - name: Create .env for Hardhat
+      - name: Create .env for Hardhat (ZKSYNC_RPC + WALLET_PRIVATE_KEY)
         run: |
           {
-            echo "PRIVATE_KEY=${{ secrets.ZKSYNC_PRIVATE_KEY }}";
-            echo "RPC_URL=https://sepolia.era.zksync.dev";
+            echo "ZKSYNC_RPC=https://sepolia.era.zksync.dev";
+            echo "WALLET_PRIVATE_KEY=${{ secrets.WALLET_PRIVATE_KEY }}";
           } > .env
           echo ".env created"
 
@@ -69,7 +66,7 @@ jobs:
 
       - name: Push to dscope-api
         env:
-          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }} # fine-grained PAT с Contents: Read & write на D-Scope-app/dscope-api
+          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
         run: |
           set -e
           git config --global user.name  "github-actions[bot]"
