@@ -70,30 +70,38 @@ jobs:
 
       # Step 7: Push the generated files to the dscope-api repository
       - name: Push to dscope-api (publish static API)
-        if: always()
-        shell: bash
-        env:
-          GHT_TOKEN: ${{ secrets.PUBLIC_API_PAT }}
-        run: |
-          set -e
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+  if: always()
+  shell: bash
+  env:
+    GHT_TOKEN: ${{ secrets.PUBLIC_API_PAT }}
+  run: |
+    set -e
+    git config --global user.name "github-actions[bot]"
+    git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Clone the public API repository
-          rm -rf public-repo
-          git clone "https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git" public-repo
+    # Клонируем репозиторий, используя стандартную команду
+    rm -rf public-repo
+    git clone https://github.com/D-Scope-app/dscope-api.git public-repo
 
-          # Ensure the destination directory exists and copy files
-          mkdir -p public-repo/api
-          cp -r public/api/* public-repo/api/ || true
+    # Добавляем удаленный репозиторий с токеном для аутентификации
+    git -C public-repo remote add origin-token https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git
 
-          # Create a simple index.html if it doesn't exist
-          if [ ! -f public-repo/index.html ]; then
-            printf "<!doctype html><meta charset='utf-8'><title>D-Scope API</title><body style='font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px'><h1>D-Scope API</h1><p><a href='./api/surveys.json'>api/surveys.json</a> • <a href='./api/surveys.list.json'>api/surveys.list.json</a></p></body>" > public-repo/index.html
-          fi
+    # Переходим в репозиторий
+    cd public-repo
 
-          # Commit and push changes
-          cd public-repo
-          git add .
-          git commit -m "update: static API" || echo "no changes to commit"
-          git push origin HEAD:main
+    # Убедимся, что находимся на ветке main
+    git checkout main
+
+    # Копируем файлы
+    mkdir -p api
+    cp -r ../public/api/* ./api/ || true
+
+    # Создаем index.html если его нет
+    if [ ! -f index.html ]; then
+      printf "<!doctype html><meta charset='utf-8'><title>D-Scope API</title><body style='font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px'><h1>D-Scope API</h1><p><a href='./api/surveys.json'>api/surveys.json</a> • <a href='./api/surveys.list.json'>api/surveys.list.json</a></p></body>" > index.html
+    fi
+
+    # Коммитим и пушим изменения
+    git add .
+    git commit -m "update: static API" || echo "no changes to commit"
+    git push origin-token HEAD:main
