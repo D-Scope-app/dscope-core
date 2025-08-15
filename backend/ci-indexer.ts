@@ -149,7 +149,7 @@ const appendLedger = (o: any) =>
   );
 
   console.log(`[Indexer] Range: ${fromBlock} -> ${toBlock}`);
-  const BATCH = 2000;
+  const BATCH = 100;
 
   // Pass 1: scan all logs to discover surveys via Factory / SurveyCreated
   for (let f = fromBlock; f <= toBlock; f += BATCH) {
