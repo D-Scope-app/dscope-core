@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: "*/15 * * * *" # каждые 15 минут
   workflow_dispatch: # ручной запуск из Actions
-  push: # временно: запуск при каждом пуше в эту ветку (можешь потом убрать)
+  push: # можно убрать позже, когда всё стабильно
 
 jobs:
   push:
@@ -26,6 +26,30 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      # ---- НОВОЕ: проверяем, что секрет с приватным ключом валиден
+      - name: Validate secrets (private key)
+        run: |
+          KEY="${{ secrets.ZKSYNC_PRIVATE_KEY }}"
+          if [ -z "$KEY" ]; then
+            echo "::error::Missing secret ZKSYNC_PRIVATE_KEY in repo Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          LEN=${#KEY}
+          if [ $LEN -ne 66 ]; then
+            echo "::error::ZKSYNC_PRIVATE_KEY must be 66 chars (0x + 64 hex). Got length: $LEN"
+            exit 1
+          fi
+          echo "Private key format looks OK."
+
+      # ---- НОВОЕ: создаём .env для hardhat/dotenv
+      - name: Create .env for Hardhat
+        run: |
+          {
+            echo "PRIVATE_KEY=${{ secrets.ZKSYNC_PRIVATE_KEY }}";
+            echo "RPC_URL=https://sepolia.era.zksync.dev";
+          } > .env
+          echo ".env created"
+
       - name: Run indexer (build JSON)
         env:
           RPC: "https://sepolia.era.zksync.dev"
@@ -45,7 +69,7 @@ jobs:
 
       - name: Push to dscope-api
         env:
-          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }} # fine-grained PAT с Contents: Read & write
+          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }} # fine-grained PAT с Contents: Read & write на D-Scope-app/dscope-api
         run: |
           set -e
           git config --global user.name  "github-actions[bot]"
@@ -57,7 +81,6 @@ jobs:
           mkdir -p public-repo/api
           cp -r public/api/* public-repo/api/ || true
 
-          # создаём index.html без heredoc (чтобы не ломать YAML)
           if [ ! -f public-repo/index.html ]; then
             printf '%s\n' '<!doctype html><meta charset="utf-8"><title>D-Scope API</title>' \
                           '<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">' \
