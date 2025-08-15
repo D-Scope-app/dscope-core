@@ -27,9 +27,10 @@ jobs:
 
       - name: Run indexer (build JSON)
         env:
-          RPC: https://sepolia.era.zksync.dev
-          FACTORY: 0x2e1b2155e8731fafed4e4352a963281bba73f3d0
+          RPC: "https://sepolia.era.zksync.dev"
+          FACTORY: "0x2e1b2155e8731fafed4e4352a963281bba73f3d0"
           START_BLOCK: 5640000
+
         run: |
           set -e
           node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
