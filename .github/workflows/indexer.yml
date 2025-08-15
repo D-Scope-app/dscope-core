@@ -56,8 +56,8 @@ jobs:
       - name: Run indexer (build JSON)
         shell: bash
         env:
-          RPC_URL: https://sepolia.era.zksync.dev
-          FACTORY_ADDRESS: 0x2e1b2155e8731fafed4e4352a963281bba73f3d0
+          RPC_URL: "https://sepolia.era.zksync.dev"
+          FACTORY_ADDRESS: "0x2e1b2155e8731fafed4e4352a963281bba73f3d0"
           START_BLOCK: "5640000"
         run: |
           set -e
