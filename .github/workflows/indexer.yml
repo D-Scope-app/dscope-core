@@ -4,10 +4,9 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
-  push:
 
 jobs:
-  push:
+  run:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,8 +14,6 @@ jobs:
     steps:
       - name: Checkout dscope-core
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -26,36 +23,25 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # 👇 важные шаги под твой hardhat.config.ts
-      - name: Validate WALLET_PRIVATE_KEY (length check)
+      # B) пишем переменные также в .env (их подхватит dotenv)
+      - name: Create .env for Hardhat and Indexer
+        shell: bash
         run: |
-          KEY="${{ secrets.WALLET_PRIVATE_KEY }}"
-          if [ -z "$KEY" ]; then
-            echo "::error::Missing repo secret WALLET_PRIVATE_KEY"; exit 1
-          fi
-          L=${#KEY}
-          if [ $L -ne 66 ]; then
-            echo "::error::WALLET_PRIVATE_KEY must be 66 chars (0x + 64 hex). Got $L"; exit 1
-          fi
-          echo "Private key format looks OK."
-
-      - name: Create .env for Hardhat (ZKSYNC_RPC + WALLET_PRIVATE_KEY)
-         run: |
-          {
-            echo "ZKSYNC_RPC=https://sepolia.era.zksync.dev";
-            echo "WALLET_PRIVATE_KEY=${{ secrets.WALLET_PRIVATE_KEY }}";
-            # 👇 для индексатора:
-            echo "RPC_URL=https://sepolia.era.zksync.dev";
-            echo "FACTORY_ADDRESS=0x2e1b2155e8731fafed4e4352a963281bba73f3d0";
-            echo "START_BLOCK=5640000";
-          } > .env
+          cat > .env <<EOF
+          ZKSYNC_RPC=https://sepolia.era.zksync.dev
+          WALLET_PRIVATE_KEY=${{ secrets.WALLET_PRIVATE_KEY }}
+          # --- indexer ---
+          RPC_URL=https://sepolia.era.zksync.dev
+          FACTORY_ADDRESS=0x2e1b2155e8731fafed4e4352a963281bba73f3d0
+          START_BLOCK=5640000
+          EOF
           echo ".env created"
 
-
+      # A) пробрасываем переменные напрямую в шаг индексатора (подстраховка)
       - name: Run indexer (build JSON)
         env:
-          RPC_URL: "https://sepolia.era.zksync.dev"
-          FACTORY_ADDRESS: "0x2e1b2155e8731fafed4e4352a963281bba73f3d0"
+          RPC_URL: https://sepolia.era.zksync.dev
+          FACTORY_ADDRESS: 0x2e1b2155e8731fafed4e4352a963281bba73f3d0
           START_BLOCK: "5640000"
         run: |
           set -e
@@ -63,18 +49,15 @@ jobs:
           npx ts-node backend/ci-indexer.ts
           ls -lah public/api || true
 
-
       - name: Produce surveys.list.json
         run: |
-          set -e
           node -e "const fs=require('fs');const p='public/api/surveys.json';if(fs.existsSync(p)){const m=JSON.parse(fs.readFileSync(p,'utf8'));const arr=Object.entries(m).map(([address,s])=>({address,...s}));fs.writeFileSync('public/api/surveys.list.json',JSON.stringify(arr,null,2));console.log('wrote',arr.length)}"
-          ls -lah public/api || true
 
       - name: Push to dscope-api
         env:
           GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
+        shell: bash
         run: |
-          set -e
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -85,19 +68,16 @@ jobs:
           cp -r public/api/* public-repo/api/ || true
 
           if [ ! -f public-repo/index.html ]; then
-            printf '%s\n' '<!doctype html><meta charset="utf-8"><title>D-Scope API</title>' \
-                          '<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">' \
-                          '<h1>D-Scope API</h1>' \
-                          '<p><a href="./api/surveys.json">api/surveys.json</a> • <a href="./api/surveys.list.json">api/surveys.list.json</a></p>' \
-                          '</body>' > public-repo/index.html
+            cat > public-repo/index.html <<'HTML'
+<!doctype html><meta charset="utf-8"><title>D-Scope API</title>
+<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">
+<h1>D-Scope API</h1>
+<p><a href="./api/surveys.json">api/surveys.json</a> • <a href="./api/surveys.list.json">api/surveys.list.json</a></p>
+</body>
+HTML
           fi
 
           cd public-repo
           git add .
-          git commit -m "update: static API" || echo "no changes to commit"
-
-          DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
-          [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH=main
-          echo "Default branch detected: $DEFAULT_BRANCH"
-
-          git push origin HEAD:"$DEFAULT_BRANCH"
+          git commit -m "update: static API" || echo "no changes"
+          git push origin HEAD:main
