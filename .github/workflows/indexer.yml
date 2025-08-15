@@ -6,72 +6,73 @@ on:
   workflow_dispatch:
 
 jobs:
-  run:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  push:
+    run:
+      runs-on: ubuntu-latest
+      permissions:
+        contents: write
 
-    steps:
-      - name: Checkout dscope-core
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      steps:
+        - name: Checkout dscope-core
+          uses: actions/checkout@v4
+          with:
+            persist-credentials: false
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+        - name: Setup Node
+          uses: actions/setup-node@v4
+          with:
+            node-version: "20"
 
-      - name: Install deps
-        run: npm ci
+        - name: Install deps
+          run: npm ci
 
-      - name: Run indexer (build JSON)
-        env:
-          RPC: "https://sepolia.era.zksync.dev"
-          FACTORY: "0x2e1b2155e8731fafed4e4352a963281bba73f3d0"
-          START_BLOCK: 5640000
+        - name: Run indexer (build JSON)
+          env:
+            RPC: "https://sepolia.era.zksync.dev"
+            FACTORY: "0x2e1b2155e8731fafed4e4352a963281bba73f3d0"
+            START_BLOCK: 5640000
 
-        run: |
-          set -e
-          node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
-          npx ts-node backend/ci-indexer.ts
-          ls -lah public/api || true
+          run: |
+            set -e
+            node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
+            npx ts-node backend/ci-indexer.ts
+            ls -lah public/api || true
 
-      - name: Produce surveys.list.json
-        run: |
-          set -e
-          node -e "const fs=require('fs');const p='public/api/surveys.json';if(fs.existsSync(p)){const m=JSON.parse(fs.readFileSync(p,'utf8'));const arr=Object.entries(m).map(([address,s])=>({address,...s}));fs.writeFileSync('public/api/surveys.list.json',JSON.stringify(arr,null,2));console.log('wrote',arr.length)}"
-          ls -lah public/api || true
+        - name: Produce surveys.list.json
+          run: |
+            set -e
+            node -e "const fs=require('fs');const p='public/api/surveys.json';if(fs.existsSync(p)){const m=JSON.parse(fs.readFileSync(p,'utf8'));const arr=Object.entries(m).map(([address,s])=>({address,...s}));fs.writeFileSync('public/api/surveys.list.json',JSON.stringify(arr,null,2));console.log('wrote',arr.length)}"
+            ls -lah public/api || true
 
-      - name: Push to dscope-api
-        env:
-          GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
-        run: |
-          set -e
-          git config --global user.name  "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        - name: Push to dscope-api
+          env:
+            GH_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
+          run: |
+            set -e
+            git config --global user.name  "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          rm -rf public-repo
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/D-Scope-app/dscope-api.git" public-repo
+            rm -rf public-repo
+            git clone "https://x-access-token:${GH_TOKEN}@github.com/D-Scope-app/dscope-api.git" public-repo
 
-          mkdir -p public-repo/api
-          cp -r public/api/* public-repo/api/ || true
+            mkdir -p public-repo/api
+            cp -r public/api/* public-repo/api/ || true
 
-          # создаём index.html без heredoc (чтобы не ломать YAML)
-          if [ ! -f public-repo/index.html ]; then
-            printf '%s\n' '<!doctype html><meta charset="utf-8"><title>D-Scope API</title>' \
-                          '<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">' \
-                          '<h1>D-Scope API</h1>' \
-                          '<p><a href="./api/surveys.json">api/surveys.json</a> • <a href="./api/surveys.list.json">api/surveys.list.json</a></p>' \
-                          '</body>' > public-repo/index.html
-          fi
+            # создаём index.html без heredoc (чтобы не ломать YAML)
+            if [ ! -f public-repo/index.html ]; then
+              printf '%s\n' '<!doctype html><meta charset="utf-8"><title>D-Scope API</title>' \
+                            '<body style="font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px">' \
+                            '<h1>D-Scope API</h1>' \
+                            '<p><a href="./api/surveys.json">api/surveys.json</a> • <a href="./api/surveys.list.json">api/surveys.list.json</a></p>' \
+                            '</body>' > public-repo/index.html
+            fi
 
-          cd public-repo
-          git add .
-          git commit -m "update: static API" || echo "no changes to commit"
+            cd public-repo
+            git add .
+            git commit -m "update: static API" || echo "no changes to commit"
 
-          DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
-          [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH=main
-          echo "Default branch detected: $DEFAULT_BRANCH"
+            DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
+            [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH=main
+            echo "Default branch detected: $DEFAULT_BRANCH"
 
-          git push origin HEAD:"$DEFAULT_BRANCH"
+            git push origin HEAD:"$DEFAULT_BRANCH"
