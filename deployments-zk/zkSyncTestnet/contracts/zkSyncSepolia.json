@@ -1,0 +1,8 @@
+SurveyFactory: 0x2e1B2155e8731FAfEd4e4352A963281bBa73F3D0
+Deploy block: 0
+{
+    "network": "zkSync Era Sepolia",
+    "chainId": 300,
+    "factory": { "address": "0xВАШ_АДРЕС_ФАБРИКИ", "deployBlock": 123456 }
+  }
+  

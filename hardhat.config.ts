@@ -23,7 +23,6 @@ const config: HardhatUserConfig = {
       url: process.env.ZKSYNC_RPC || "",
       ethNetwork: "sepolia",
       zksync: true,
-      verifyURL: "https://zksync2-testnet-explorer.zksync.dev/tx/",
       accounts: [process.env.WALLET_PRIVATE_KEY || ""],
     },
   },
