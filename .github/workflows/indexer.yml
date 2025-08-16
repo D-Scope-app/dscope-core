@@ -71,16 +71,16 @@ jobs:
       - name: Push to dscope-api (publish static API)
         if: always()
         env:
-          GHT_TOKEN: ${{ secrets.PUBLIC_API_PAT }}
+          GHT_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [ -z "${GHT_TOKEN:-}" ]; then
-            echo "::error::Missing secret PUBLIC_API_PAT"; exit 1
+            echo "::error::Missing secret API_PUSH_TOKEN"; exit 1
           fi
           if [ ${#GHT_TOKEN} -lt 40 ]; then
-            echo "::error::PUBLIC_API_PAT seems too short"; exit 1
+            echo "::error::API_PUSH_TOKEN seems too short"; exit 1
           fi
 
           git config --global user.name  "github-actions[bot]"
