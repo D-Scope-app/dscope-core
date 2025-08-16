@@ -57,7 +57,6 @@ jobs:
           echo "FACTORY_ADDRESS=0x2e1b2155e8731fafed4e4352a963281bba73f3d0" >> .env
           echo "START_BLOCK=5640000" >> .env
           echo ".env file created with variables"
-          cat .env # To verify content in logs
 
       # Step 6: Run the indexer script to build JSON data
       - name: Run indexer (build JSON)
