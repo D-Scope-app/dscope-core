@@ -7,6 +7,11 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/indexer.yml"
+  schedule:
+    - cron: "*/15 * * * *" # каждые 15 минут
+concurrency:
+  group: indexer
+  cancel-in-progress: false
 
 # Defines a single job named 'push'
 jobs:
