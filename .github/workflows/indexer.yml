@@ -73,20 +73,36 @@ jobs:
         if: always()
         env:
           GHT_TOKEN: ${{ secrets.PUBLIC_API_PAT }}
+        shell: bash
         run: |
-          set -e
-          git config --global user.name "github-actions[bot]"
+          set -euo pipefail
+
+          if [ -z "${GHT_TOKEN:-}" ]; then
+            echo "::error::Missing secret PUBLIC_API_PAT"; exit 1
+          fi
+          if [ ${#GHT_TOKEN} -lt 40 ]; then
+            echo "::error::PUBLIC_API_PAT seems too short"; exit 1
+          fi
+
+          git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Проверяем доступ токена
+          git ls-remote "https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git" > /dev/null
+
           rm -rf public-repo
-          git clone https://github.com/D-Scope-app/dscope-api.git public-repo
-          git -C public-repo remote add origin-token https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git
+          git clone "https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git" public-repo
+
           cd public-repo
-          git checkout main
+          git checkout main || git checkout -b main
+
           mkdir -p api
-          cp -r ../public/api/* ./api/ || true
+          cp -r ../public/api/* ./api/ 2>/dev/null || true
+
           if [ ! -f index.html ]; then
             printf "<!doctype html><meta charset='utf-8'><title>D-Scope API</title><body style='font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px'><h1>D-Scope API</h1><p><a href='./api/surveys.json'>api/surveys.json</a> • <a href='./api/surveys.list.json'>api/surveys.list.json</a></p></body>" > index.html
           fi
+
           git add .
           git commit -m "update: static API" || echo "no changes to commit"
-          git push origin-token HEAD:main
+          git push origin HEAD:main
