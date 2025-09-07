@@ -1,0 +1,8 @@
+{
+  "network": "zkSync Era Sepolia",
+  "chainId": 300,
+  "factory": {
+    "address": "0x13ea72C2e7E32979A154b0142c85b7d49F068bB5",
+    "deployBlock": 5687200
+  }
+}

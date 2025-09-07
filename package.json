@@ -1,0 +1,29 @@
+{
+  "name": "dscope-core",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@matterlabs/hardhat-zksync-deploy": "^1.7.0",
+    "@matterlabs/hardhat-zksync-solc": "^1.4.0",
+    "@matterlabs/hardhat-zksync-verify": "^1.9.0",
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "@types/node": "^24.2.1",
+    "hardhat": "^2.26.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "zksync-ethers": "^6.19.0"
+  },
+  "dependencies": {
+    "@matterlabs/hardhat-zksync-ethers": "^1.4.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "dotenv": "^17.2.1",
+    "ethers": "^6.15.0"
+  }
+}

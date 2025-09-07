@@ -1,0 +1,112 @@
+name: Indexer to Public API
+
+# This workflow is triggered on a push to the 'backend' directory
+# or on a push to this workflow file itself.
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/indexer.yml"
+  schedule:
+    - cron: "*/15 * * * *" # каждые 15 минут
+concurrency:
+  group: indexer
+  cancel-in-progress: false
+
+# Defines a single job named 'push'
+jobs:
+  push:
+    # Runs the job on the latest version of Ubuntu
+    runs-on: ubuntu-latest
+    permissions:
+      # Grants write permission to the contents of the repository
+      contents: write
+
+    # Defines the steps for this job
+    steps:
+      # Step 1: Checkout the dscope-core repository
+      - name: Checkout dscope-core
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js environment
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Step 3: Install project dependencies
+      - name: Install deps
+        run: npm ci
+
+      # Step 4: Validate the private key for correctness
+      - name: Validate WALLET_PRIVATE_KEY (length check)
+        shell: bash
+        run: |
+          KEY="${{ secrets.WALLET_PRIVATE_KEY }}"
+          if [ -z "$KEY" ]; then
+            echo "::error::Missing repo secret WALLET_PRIVATE_KEY"; exit 1
+          fi
+          L=${#KEY}
+          if [ "$L" -ne 66 ]; then
+            echo "::error::WALLET_PRIVATE_KEY must be 66 chars (0x + 64 hex). Got $L"; exit 1
+          fi
+          echo "Private key format looks OK."
+
+      # Step 5: Create the .env file with necessary environment variables
+      - name: Create .env for Hardhat
+        shell: bash
+        run: |
+          echo "ZKSYNC_RPC=https://sepolia.era.zksync.dev" > .env
+          echo "WALLET_PRIVATE_KEY=${{ secrets.WALLET_PRIVATE_KEY }}" >> .env
+          echo "RPC_URL=https://sepolia.era.zksync.dev" >> .env
+          echo "FACTORY_ADDRESS=0x2e1b2155e8731fafed4e4352a963281bba73f3d0" >> .env
+          echo "START_BLOCK=5640000" >> .env
+          echo ".env file created with variables"
+
+      # Step 6: Run the indexer script to build JSON data
+      - name: Run indexer (build JSON)
+        shell: bash
+        run: |
+          set -e
+          node -e "const fs=require('fs');fs.mkdirSync('public/api',{recursive:true});"
+          npx ts-node backend/ci-indexer.ts
+          ls -lah public/api || true
+
+      # Step 7: Push to dscope-api (publish static API)
+      - name: Push to dscope-api (publish static API)
+        if: always()
+        env:
+          GHT_TOKEN: ${{ secrets.API_PUSH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GHT_TOKEN:-}" ]; then
+            echo "::error::Missing secret API_PUSH_TOKEN"; exit 1
+          fi
+          if [ ${#GHT_TOKEN} -lt 40 ]; then
+            echo "::error::API_PUSH_TOKEN seems too short"; exit 1
+          fi
+
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Проверяем доступ токена
+          git ls-remote "https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git" > /dev/null
+
+          rm -rf public-repo
+          git clone "https://x-access-token:${GHT_TOKEN}@github.com/D-Scope-app/dscope-api.git" public-repo
+
+          cd public-repo
+          git checkout main || git checkout -b main
+
+          mkdir -p api
+          cp -r ../public/api/* ./api/ 2>/dev/null || true
+
+          if [ ! -f index.html ]; then
+            printf "<!doctype html><meta charset='utf-8'><title>D-Scope API</title><body style='font-family:system-ui,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px'><h1>D-Scope API</h1><p><a href='./api/surveys.json'>api/surveys.json</a> • <a href='./api/surveys.list.json'>api/surveys.list.json</a></p></body>" > index.html
+          fi
+
+          git add .
+          git commit -m "update: static API" || echo "no changes to commit"
+          git push origin HEAD:main
