@@ -69,5 +69,19 @@
     "metaValid": false,
     "metaUrl": "/api/meta/300/0x72abff39647f1fdf083f22172823e5ede2efa9b9.json",
     "prizeLiveBalance": "0"
+  },
+  "0x20acb996818ad42444db88193ec9ccb5330bb9d7": {
+    "creator": "0x24a249ea30ec4eca1f944cc1892f56cf78d654b0",
+    "start": 0,
+    "end": 0,
+    "metaHash": "0xd90cc7c5ff06179f1a43afb700253ff02ed321faa38b1d9166309802fab7a3d8",
+    "funded": false,
+    "fundingTxHash": null,
+    "title": "Untitled",
+    "plannedRewardEth": "0",
+    "plannedRewardWei": "0",
+    "metaValid": false,
+    "metaUrl": "/api/meta/300/0x20acb996818ad42444db88193ec9ccb5330bb9d7.json",
+    "prizeLiveBalance": "0"
   }
 }
