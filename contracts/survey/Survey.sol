@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "../gate/IEligibilityGate.sol";
+
 contract Survey {
     enum SurveyType { MULTIPLE_CHOICE, BINARY_VOTE }
     enum SelectionType { SINGLE, MULTIPLE }
@@ -15,6 +17,7 @@ contract Survey {
 
     // --- Core metadata/state
     address public creator;
+    address public gate; // eligibility gate (EIP-712 attester)
     SurveyType public surveyType;
     uint256 public startTime;
     uint256 public endTime;
@@ -32,11 +35,14 @@ contract Survey {
     address[] public participants;
     mapping(address => bool) public hasParticipated;
 
-    // --- NEW: prize-pool events
-    event PrizeFunded(address indexed from, uint256 amount);
+    // --- anti-replay for zkpass-lite
+    mapping(bytes32 => bool) public nullifierUsed;
+
+    // --- Prize-pool events
+    event PrizeFunded(address indexed funder, uint256 amount);
     event PrizeSwept(address indexed to, uint256 amount);
 
-    // --- Events (existing)
+    // --- Main events (keep names for indexer)
     event SurveyCreated(address indexed survey, address indexed creator, bytes32 metaHash);
     event QuestionAdded(uint indexed index, string text);
     event Voted(address indexed voter);
@@ -58,30 +64,28 @@ contract Survey {
         _;
     }
 
-    // NOTE: constructor is now payable to accept optional initial prize funding (B2).
     constructor(
         SurveyType _surveyType,
         uint256 _startTime,
         uint256 _endTime,
         address _creator,
-        bytes32 _metaHash
+        bytes32 _metaHash,
+        address _gate
     ) payable {
         require(_startTime < _endTime, "Invalid time window");
         creator = _creator;
+        gate = _gate;
         surveyType = _surveyType;
         startTime = _startTime;
         endTime = _endTime;
         metaHash = _metaHash;
 
-        // Emit funded event if value was sent during deployment via Factory{value: ...}
         if (msg.value > 0) {
             emit PrizeFunded(_creator, msg.value);
         }
-
         emit SurveyCreated(address(this), _creator, _metaHash);
     }
 
-    /// @notice Add a question before the survey starts
     function addQuestion(
         string calldata _text,
         string[] calldata _options,
@@ -101,7 +105,30 @@ contract Survey {
         emit QuestionAdded(questions.length - 1, _text);
     }
 
+    // ----- Voting (legacy open vote) -----
     function vote(uint[][] calldata selectedOptionsPerQuestion) external {
+        require(gate == address(0), "GATED_SURVEY");
+        _voteCommon(selectedOptionsPerQuestion);
+    }
+
+    // ----- Voting with zkpass-lite proof -----
+    function voteWithProof(
+        uint[][] calldata selectedOptionsPerQuestion,
+        bytes32 nullifier,
+        uint256 deadline,
+        bytes calldata sig
+    ) external {
+        require(gate != address(0), "NO_GATE");
+        require(!nullifierUsed[nullifier], "NullifierUsed");
+
+        bool ok = IEligibilityGate(gate).verify(msg.sender, address(this), nullifier, deadline, sig);
+        require(ok, "InvalidProof");
+        nullifierUsed[nullifier] = true;
+
+        _voteCommon(selectedOptionsPerQuestion);
+    }
+
+    function _voteCommon(uint[][] calldata selectedOptionsPerQuestion) internal {
         require(block.timestamp >= startTime, "Survey not started");
         require(block.timestamp <= endTime, "Survey ended");
         require(!hasParticipated[msg.sender], "Already participated");
@@ -133,8 +160,7 @@ contract Survey {
         emit Voted(msg.sender);
     }
 
-    // ===== Finalization =====
-
+    // ----- Finalization -----
     function finalize(bytes32 _rulesHash, bytes32 _resultsHash) external {
         _finalizeCommon(_rulesHash, _resultsHash, 0, 0);
     }
@@ -167,29 +193,18 @@ contract Survey {
         emit Finalized(address(this), participants.length, _rulesHash, _resultsHash, _claimOpenAt, _claimDeadline);
     }
 
-    // ===== NEW: Prize pool helpers =====
-
-    /// @notice Current prize balance (native ETH on zkSync)
+    // ----- Prize pool -----
     function prizeBalance() public view returns (uint256) {
         return address(this).balance;
     }
 
-    /// @notice Allow the creator to top-up the prize pool after deployment (optional).
-    /// If later you want public funding, remove the onlyCreator check or gate it by a flag.
     function fundPrize() public payable onlyCreator {
         require(msg.value > 0, "Zero value");
         emit PrizeFunded(msg.sender, msg.value);
     }
 
-    /// @notice Accept plain ETH transfers; by default restrict to creator via fundPrize.
-    receive() external payable {
-        // Route to fundPrize to reuse checks and event
-        // If you want to allow anyone to fund, replace with:
-        // require(msg.value > 0, "Zero value"); emit PrizeFunded(msg.sender, msg.value);
-        fundPrize();
-    }
+    receive() external payable { fundPrize(); }
 
-    /// @notice Sweep remaining prize (e.g., to a payout module or back to the creator) after finalize.
     function sweepPrize(address payable to) external onlyCreator {
         require(finalized, "Not finalized");
         uint256 amt = address(this).balance;
@@ -200,13 +215,8 @@ contract Survey {
         }
     }
 
-    // ===== Views =====
-
-    function getQuestion(uint index) external view returns (
-        string memory text,
-        string[] memory options,
-        SelectionType selectionType
-    ) {
+    // ----- Views -----
+    function getQuestion(uint index) external view returns (string memory, string[] memory, SelectionType) {
         require(index < questions.length, "Invalid question index");
         Question storage q = questions[index];
         return (q.text, q.options, q.selectionType);
@@ -216,11 +226,8 @@ contract Survey {
         require(questionIndex < questions.length, "Invalid question index");
         Question storage q = questions[questionIndex];
         uint optionCount = q.options.length;
-
         uint[] memory result = new uint[](optionCount);
-        for (uint i = 0; i < optionCount; i++) {
-            result[i] = q.votesPerOption[i];
-        }
+        for (uint i = 0; i < optionCount; i++) result[i] = q.votesPerOption[i];
         return result;
     }
 

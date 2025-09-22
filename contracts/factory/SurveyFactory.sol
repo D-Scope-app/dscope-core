@@ -11,8 +11,8 @@ contract SurveyFactory {
         uint256 endTime,
         Survey.SurveyType surveyType,
         bytes32 metaHash,
-        uint256 plannedReward,   // офчейн бюджет (Safe)
-        uint256 initialValue     // фактический msg.value, ушедший в Survey
+        uint256 plannedReward,
+        uint256 initialValue
     );
 
     address[] public allSurveys;
@@ -21,29 +21,37 @@ contract SurveyFactory {
         Survey.SurveyType surveyType,
         uint256 startTime,
         uint256 endTime,
-        bytes32 metaHash,        // ВАЖНО: теперь bytes32, без keccak внутри
-        uint256 plannedReward    // заявка на офчейн-пул (может быть 0)
+        bytes32 metaHash,
+        uint256 plannedReward
     ) external payable returns (address surveyAddr) {
         Survey s = new Survey{ value: msg.value }(
-            surveyType,
-            startTime,
-            endTime,
-            msg.sender,
-            metaHash
+            surveyType, startTime, endTime, msg.sender, metaHash, address(0)
         );
         surveyAddr = address(s);
-
         allSurveys.push(surveyAddr);
 
         emit SurveyDeployed(
-            surveyAddr,
-            msg.sender,
-            startTime,
-            endTime,
-            surveyType,
-            metaHash,
-            plannedReward,
-            msg.value
+            surveyAddr, msg.sender, startTime, endTime, surveyType, metaHash, plannedReward, msg.value
+        );
+    }
+
+    function createSurveyWithGate(
+        Survey.SurveyType surveyType,
+        uint256 startTime,
+        uint256 endTime,
+        bytes32 metaHash,
+        uint256 plannedReward,
+        address gate
+    ) external payable returns (address surveyAddr) {
+        require(gate != address(0), "INVALID_GATE");
+        Survey s = new Survey{ value: msg.value }(
+            surveyType, startTime, endTime, msg.sender, metaHash, gate
+        );
+        surveyAddr = address(s);
+        allSurveys.push(surveyAddr);
+
+        emit SurveyDeployed(
+            surveyAddr, msg.sender, startTime, endTime, surveyType, metaHash, plannedReward, msg.value
         );
     }
 
