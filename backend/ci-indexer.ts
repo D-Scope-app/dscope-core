@@ -2,44 +2,38 @@
 // @ts-nocheck
 
 /**
- * D-Scope V1 indexer (no server).
- * - Reads logs from zkSync Era Sepolia
- * - Discovers surveys via Factory and Survey events
- * - Enriches with local meta JSON (public/api/meta/<chainId>/<survey>.json)
- * - Verifies off-chain treasury funding via submitted tx hashes (public/api/funding/<chainId>/*.json)
- * - Writes static artifacts to /public/api/*
+ * D-Scope V1 indexer (no server) — single/multi factory, Gate/Predicates, ms→sec, backfill, computed status.
  *
- * Outputs:
- *   public/api/ledger.ndjson
- *   public/api/surveys.json
- *   public/api/balances.json
- *   public/api/state.json
- *   public/api/surveys.list.json
+ * ENV:
+ *   ZKSYNC_RPC=https://sepolia.era.zksync.dev
+ *   FACTORY_ADDRESS=0x045d5aad5584da4a0b507d3d28876b3328e113ec
+ *   # FACTORIES=0x...,0x...
+ *   START_BLOCK=5783316
+ *   CHAIN_ID=300
+ *   TREASURY_SAFE=0xabfd53eb3c6c2453bed90fa756ffe509e35eb60b
+ *   MIN_CONFIRMATIONS=2
+ *   GATE_ADDR=0xe41d3fa062069fd5004c728dd1abed71cbf6377f
+ *   ONLY_LAST_BLOCKS=0
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { config as dotenvConfig } from "dotenv";
 import { Provider } from "zksync-ethers";
-import { Interface, keccak256, toUtf8Bytes, parseEther } from "ethers";
+import {
+  Interface,
+  keccak256,
+  toUtf8Bytes,
+  parseEther,
+  Contract,
+} from "ethers";
 import * as hre from "hardhat";
 
-// ---------- Load .env robustly ----------
-const envPath1 = path.resolve(process.cwd(), ".env");
-const envPath2 = path.resolve(__dirname, "../.env");
-const chosenEnvPath = fs.existsSync(envPath1)
-  ? envPath1
-  : fs.existsSync(envPath2)
-  ? envPath2
-  : null;
-if (chosenEnvPath) {
-  dotenvConfig({ path: chosenEnvPath });
-  console.log(`[Indexer] .env loaded from: ${chosenEnvPath}`);
-} else {
-  console.log(
-    "[Indexer] .env file not found (will rely on defaults / CLI env)."
-  );
-}
+// ---------- Load .env ----------
+const env1 = path.resolve(process.cwd(), ".env");
+const env2 = path.resolve(__dirname, "../.env");
+const envPath = fs.existsSync(env1) ? env1 : fs.existsSync(env2) ? env2 : null;
+if (envPath) dotenvConfig({ path: envPath, override: true });
 
 // ---------- Helpers ----------
 function readJSON<T = any>(p: string, fallback: T): T {
@@ -49,89 +43,152 @@ function readJSON<T = any>(p: string, fallback: T): T {
     return fallback;
   }
 }
-
 function canonicalize(obj: any) {
-  // stable key order
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj || {}).sort();
   const out: any = {};
   for (const k of keys) out[k] = obj[k];
   return JSON.stringify(out);
 }
+function toSec(x: any) {
+  const n = Number(x || 0);
+  // treat anything > ~ 2e10 as ms
+  return n > 2e10 ? Math.floor(n / 1000) : Math.floor(n);
+}
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+// predicates normalization
+type Predicate =
+  | { key: "age" | "age_bucket"; op: ">=" | "<=" | "==" | "in"; value: any }
+  | { key: "country" | "region"; op: "in" | "not_in"; value: string[] }
+  | { key: "gender"; op: "in" | "=="; value: string | string[] }
+  | { key: "human"; op: "=="; value: boolean }
+  | { key: string; op: string; value: any };
+type GateInfo = { addr: string; predicates: Predicate[]; epoch?: string };
+type FundingSubmission = {
+  survey: string;
+  txHash: string;
+  createdAt?: number;
+  note?: string;
+};
+
+function normalizePredicates(raw: any): Predicate[] {
+  if (!raw) return [];
+  const out: Predicate[] = [];
+
+  if (raw?.age) {
+    if (raw.age.gte !== undefined)
+      out.push({ key: "age", op: ">=", value: Number(raw.age.gte) });
+    if (raw.age.lte !== undefined)
+      out.push({ key: "age", op: "<=", value: Number(raw.age.lte) });
+    if (raw.age.eq !== undefined)
+      out.push({ key: "age", op: "==", value: Number(raw.age.eq) });
+  }
+  if (raw?.age_bucket) {
+    if (Array.isArray(raw.age_bucket.in))
+      out.push({
+        key: "age_bucket",
+        op: "in",
+        value: raw.age_bucket.in.map(Number),
+      });
+    if (raw.age_bucket.eq !== undefined)
+      out.push({
+        key: "age_bucket",
+        op: "==",
+        value: Number(raw.age_bucket.eq),
+      });
+  }
+  if (raw?.gender) {
+    if (Array.isArray(raw.gender.in))
+      out.push({ key: "gender", op: "in", value: raw.gender.in.map(String) });
+    if (raw.gender.eq !== undefined)
+      out.push({ key: "gender", op: "==", value: String(raw.gender.eq) });
+  }
+  if (Array.isArray(raw?.country?.in))
+    out.push({ key: "country", op: "in", value: raw.country.in.map(String) });
+  if (Array.isArray(raw?.country?.not_in))
+    out.push({
+      key: "country",
+      op: "not_in",
+      value: raw.country.not_in.map(String),
+    });
+  if (Array.isArray(raw?.region?.in))
+    out.push({ key: "region", op: "in", value: raw.region.in.map(String) });
+
+  if (raw?.human !== undefined)
+    out.push({ key: "human", op: "==", value: !!raw.human });
+  if (Array.isArray(raw?.extra))
+    for (const e of raw.extra)
+      out.push({ key: String(e.key), op: String(e.op), value: e.value });
+  return out;
+}
 
 // ---------- Config ----------
-const CHAIN_ID: number = Number(process.env.CHAIN_ID || 300);
-
-// Try env → hardhat url → default zkSync Sepolia
-let RPC: string =
+const CHAIN_ID = Number(process.env.CHAIN_ID || 300);
+const RPC =
+  process.env.ZKSYNC_RPC ||
   process.env.RPC_URL ||
   ((hre.network?.config as any)?.url as string | undefined) ||
   "https://sepolia.era.zksync.dev";
 
-// Try env → deployments/zkSyncSepolia.json
-let FACTORY: string = (process.env.FACTORY_ADDRESS || "").toLowerCase();
-if (!FACTORY) {
-  const depPath = path.resolve(
-    process.cwd(),
-    "deployments",
-    "zkSyncSepolia.json"
+let FACTORY: string = (process.env.FACTORY_ADDRESS || process.env.FACTORY || "")
+  .toLowerCase()
+  .trim();
+let FACTORIES: string[] = [];
+if (process.env.FACTORIES) {
+  FACTORIES = String(process.env.FACTORIES)
+    .split(/[,\s]+/)
+    .map((s) => s.toLowerCase())
+    .filter(Boolean);
+}
+if (FACTORY && !FACTORIES.includes(FACTORY)) FACTORIES.unshift(FACTORY);
+
+// Fallback к deployments
+if (!FACTORY && FACTORIES.length === 0) {
+  const dep = readJSON(
+    path.resolve(process.cwd(), "deployments", "zkSyncSepolia.json"),
+    null as any
   );
-  const dep = readJSON(depPath, null as any);
-  if (dep?.factory?.address) {
+  if (dep?.factory?.address)
     FACTORY = String(dep.factory.address).toLowerCase();
-    console.log(
-      `[Indexer] FACTORY_ADDRESS taken from deployments/zkSyncSepolia.json: ${FACTORY}`
-    );
-  }
+  if (FACTORY) FACTORIES.unshift(FACTORY);
 }
 
-const START: number = Number(
-  process.env.START_BLOCK ||
+const START =
+  Number(process.env.START_BLOCK) ||
+  Number(
     readJSON(path.resolve(process.cwd(), "deployments", "zkSyncSepolia.json"), {
       factory: { deployBlock: 0 },
-    })?.factory?.deployBlock ||
-    0
-);
-
-// Off-chain treasury (Safe) funding
-const TREASURY_SAFE = String(process.env.TREASURY_SAFE || "").toLowerCase(); // REQUIRED for funding verification
-const MIN_CONF = Number(process.env.MIN_CONFIRMATIONS || 2); // confirmations before we accept funding
-
-// Optional tail scan for local dev
+    })?.factory?.deployBlock || 0
+  );
 const ONLY_LAST = Number(process.env.ONLY_LAST_BLOCKS || 0);
 
-// Sanity logs
+const TREASURY_SAFE = String(process.env.TREASURY_SAFE || "").toLowerCase();
+const MIN_CONF = Number(
+  process.env.MIN_CONFIRMATIONS || process.env.MIN_CONF || 2
+);
+
+const GATE_ADDR_HINT = (process.env.GATE_ADDR || "").toLowerCase();
+
 console.log("[Indexer] Effective config:", {
   RPC,
   FACTORY,
+  FACTORIES,
   START_BLOCK: START,
   ONLY_LAST_BLOCKS: ONLY_LAST,
   CHAIN_ID,
   TREASURY_SAFE,
   MIN_CONF,
+  GATE_ADDR_HINT,
 });
-
-if (!FACTORY) {
+if (!FACTORY && FACTORIES.length === 0)
   throw new Error(
-    "FACTORY_ADDRESS is required. Set it in .env or deployments/zkSyncSepolia.json.\n" +
-      "Example .env:\n" +
-      "  RPC_URL=https://sepolia.era.zksync.dev\n" +
-      "  FACTORY_ADDRESS=0x834C01032cdF2C35b725f73F9CCF0d227392228c\n" +
-      "  START_BLOCK=123456  # block of factory deployment\n" +
-      "  CHAIN_ID=300        # zkSync Era Sepolia\n" +
-      "  TREASURY_SAFE=0xYourSafeAddress\n" +
-      "  MIN_CONFIRMATIONS=2"
+    "FACTORY_ADDRESS/FACTORY is required in .env (or FACTORIES)."
   );
-}
-if (!TREASURY_SAFE) {
-  console.warn(
-    "[Indexer] TREASURY_SAFE is empty — funding verification will be skipped."
-  );
-}
 
 // ---------- Output files ----------
-const outDir = path.join(process.cwd(), "public", "api");
+const outDir = path.resolve(process.cwd(), "../dscope-api/api");
 const metaDir = path.join(outDir, "meta", String(CHAIN_ID));
-const fundingDir = path.join(outDir, "funding", String(CHAIN_ID)); // user-submitted tx hashes
+const fundingDir = path.join(outDir, "funding", String(CHAIN_ID));
 
 const FILES = {
   STATE: path.join(outDir, "state.json"),
@@ -139,6 +196,7 @@ const FILES = {
   BAL: path.join(outDir, "balances.json"),
   SURV: path.join(outDir, "surveys.json"),
   LIST: path.join(outDir, "surveys.list.json"),
+  GATES: path.join(outDir, "gates.json"),
 };
 
 function ensureOutputs() {
@@ -158,62 +216,54 @@ const appendLedger = (o: any) =>
 // ---------- Meta enrich ----------
 function readLocalMeta(surveyAddr: string) {
   const localPath = path.join(metaDir, `${surveyAddr}.json`);
-  if (!fs.existsSync(localPath)) {
-    return {
-      meta: null,
-      metaValid: false,
-      title: "Untitled",
-      plannedRewardEth: "0",
-      plannedRewardWei: "0",
-      metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
-    };
-  }
+  const base = {
+    meta: null,
+    metaValid: false,
+    title: "Untitled",
+    summary: "",
+    image: "",
+    plannedRewardEth: "0",
+    plannedRewardWei: "0",
+    metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
+    gateAddr: "",
+    predicatesRaw: null as any,
+    epoch: undefined as string | undefined,
+  };
+  if (!fs.existsSync(localPath)) return base;
   try {
-    const raw = fs.readFileSync(localPath, "utf8");
-    const meta = JSON.parse(raw);
-    const title = (meta?.title ?? "Untitled").toString();
+    const meta = JSON.parse(fs.readFileSync(localPath, "utf8"));
     const plannedRewardEth = (meta?.plannedReward ?? "0").toString();
     let plannedRewardWei = "0";
     try {
       plannedRewardWei = parseEther(plannedRewardEth).toString();
-    } catch {
-      plannedRewardWei = "0";
-    }
+    } catch {}
     return {
       meta,
-      metaValid: false, // will validate against on-chain metaHash later
-      title,
+      metaValid: false,
+      title: (meta?.title ?? "Untitled").toString(),
+      summary: (meta?.summary ?? "").toString(),
+      image: (meta?.image ?? "").toString(),
       plannedRewardEth,
       plannedRewardWei,
       metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
+      gateAddr: (meta?.gate?.addr ?? meta?.gateAddr ?? "").toString(),
+      predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
+      epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
     };
   } catch {
-    return {
-      meta: null,
-      metaValid: false,
-      title: "Untitled",
-      plannedRewardEth: "0",
-      plannedRewardWei: "0",
-      metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
-    };
+    return base;
   }
 }
 
-// ---------- Funding submissions (off-chain) ----------
-type FundingSubmission = {
-  survey: string;
-  txHash: string;
-  createdAt?: number;
-  note?: string;
-};
+// ---------- Funding submissions ----------
 function readFundingSubmissions(): FundingSubmission[] {
   const list: FundingSubmission[] = [];
   try {
-    const files = fs.readdirSync(fundingDir).filter((f) => f.endsWith(".json"));
-    for (const f of files) {
+    for (const f of fs
+      .readdirSync(fundingDir)
+      .filter((f) => f.endsWith(".json"))) {
       try {
-        const full = path.join(fundingDir, f);
-        const j = JSON.parse(fs.readFileSync(full, "utf8"));
+        const j = JSON.parse(fs.readFileSync(path.join(fundingDir, f), "utf8"));
         if (j?.survey && j?.txHash) {
           list.push({
             survey: String(j.survey).toLowerCase(),
@@ -222,33 +272,43 @@ function readFundingSubmissions(): FundingSubmission[] {
             note: j.note ? String(j.note) : undefined,
           });
         }
-      } catch {
-        /* ignore invalid */
-      }
+      } catch {}
     }
-  } catch {
-    /* empty */
-  }
+  } catch {}
   return list;
+}
+
+// ---------- Status computation ----------
+function computeStatus(
+  startSec?: number | null,
+  endSec?: number | null,
+  finalizedSec?: number | null,
+  now = nowSec()
+) {
+  const s = startSec && startSec > 0 ? startSec : null;
+  const e = endSec && endSec > 0 ? endSec : null;
+  const f = finalizedSec && finalizedSec > 0 ? finalizedSec : null;
+  if (f) return "past";
+  if (e && now >= e) return "past";
+  if (s && now < s) return "upcoming";
+  return "active"; // start now OR open-ended
 }
 
 // ---------- Main ----------
 (async () => {
   ensureOutputs();
 
-  // Load ABIs from artifacts (do `npx hardhat compile` before running indexer)
   const FactoryArtifact = await hre.artifacts.readArtifact("SurveyFactory");
   const SurveyArtifact = await hre.artifacts.readArtifact("Survey");
   const iF = new Interface(FactoryArtifact.abi);
   const iS = new Interface(SurveyArtifact.abi);
 
   const provider = new Provider(RPC);
-
-  // Range
   const state = readJSON(FILES.STATE, { lastBlock: 0 });
   const latest = await provider.getBlockNumber();
+
   const fromByState = Number(state.lastBlock || 0) + 1;
-  const fromByStart = Math.max(START, 0);
+  const fromByStart = Math.max(Number(START) || 0, 0);
   const fromByTail = ONLY_LAST ? Math.max(latest - ONLY_LAST + 1, 0) : 0;
   const fromBlock = Math.max(fromByState, fromByStart, fromByTail);
   const toBlock = latest;
@@ -258,30 +318,8 @@ function readFundingSubmissions(): FundingSubmission[] {
     process.exit(0);
   }
 
-  // Snapshots
   const balances: Record<string, number> = readJSON(FILES.BAL, {});
-  const surveys: Record<
-    string,
-    {
-      creator: string;
-      start: number;
-      end: number;
-      metaHash: string; // bytes32 hex (from events)
-      surveyType?: number; // 0/1
-      prizeFunded?: string; // wei as decimal string (accumulated, on-chain pool)
-      prizeSwept?: string; // wei as decimal string (accumulated)
-      prizeLiveBalance?: string; // wei (current on-chain balance)
-      // meta enrich:
-      title?: string;
-      metaValid?: boolean;
-      metaUrl?: string;
-      plannedRewardEth?: string; // from meta (string)
-      plannedRewardWei?: string; // computed
-      // off-chain treasury funding:
-      funded?: boolean;
-      fundingTxHash?: string | null;
-    }
-  > = readJSON(FILES.SURV, {});
+  const surveys: Record<string, any> = readJSON(FILES.SURV, {});
   const knownSurveyAddrs = new Set(
     Object.keys(surveys).map((a) => a.toLowerCase())
   );
@@ -289,7 +327,18 @@ function readFundingSubmissions(): FundingSubmission[] {
   console.log(`[Indexer] Range: ${fromBlock} -> ${toBlock}`);
   const BATCH = 100;
 
-  // -------- Pass 1: scan all logs to discover surveys via Factory / SurveyCreated
+  // block timestamp cache
+  const tsCache = new Map<number, number>();
+  async function blockTs(n: number) {
+    if (!n) return 0;
+    if (tsCache.has(n)) return tsCache.get(n)!;
+    const b = await provider.getBlock(n);
+    const ts = Number(b?.timestamp || 0);
+    tsCache.set(n, ts);
+    return ts;
+  }
+
+  // -------- Pass 1: scan all logs (factories + survey contracts)
   for (let f = fromBlock; f <= toBlock; f += BATCH) {
     const t = Math.min(f + BATCH - 1, toBlock);
     const logs = await provider.getLogs({ fromBlock: f, toBlock: t });
@@ -297,17 +346,18 @@ function readFundingSubmissions(): FundingSubmission[] {
     for (const l of logs) {
       const addr = (l.address || "").toLowerCase();
 
-      // Factory events (SurveyDeployed is the canonical source for start/end/surveyType/metaHash)
-      if (addr === FACTORY) {
+      // Factory events
+      if (FACTORIES.includes(addr)) {
         try {
           const p = iF.parseLog(l);
           if (p?.name === "SurveyDeployed" || p?.name === "SurveyCreated") {
             const survey = (p.args.survey as string).toLowerCase();
             const creator = (p.args.creator as string)?.toLowerCase?.() || "";
-            const start = Number(p.args.startTime ?? p.args.start ?? 0);
-            const end = Number(p.args.endTime ?? p.args.end ?? 0);
+            const start = toSec(Number(p.args.startTime ?? p.args.start ?? 0));
+            const end = toSec(Number(p.args.endTime ?? p.args.end ?? 0));
             const surveyType = Number(p.args.surveyType ?? 0);
             const metaHash = String(p.args.metaHash ?? "");
+            const ts = await blockTs(l.blockNumber);
 
             surveys[survey] = {
               ...(surveys[survey] || {}),
@@ -318,6 +368,7 @@ function readFundingSubmissions(): FundingSubmission[] {
               surveyType,
               funded: surveys[survey]?.funded ?? false,
               fundingTxHash: surveys[survey]?.fundingTxHash ?? null,
+              createdAt: surveys[survey]?.createdAt || ts, // NEW
             };
             knownSurveyAddrs.add(survey);
 
@@ -330,21 +381,21 @@ function readFundingSubmissions(): FundingSubmission[] {
               metaHash,
               surveyType,
               block: l.blockNumber,
+              ts,
               tx: l.transactionHash,
             });
           }
-        } catch {
-          /* ignore non-matching logs */
-        }
+        } catch {}
       }
 
-      // Survey's own event (SurveyCreated) – confirms metaHash/creator (older/newer variants)
+      // Survey's own SurveyCreated (for safety)
       try {
         const p2 = iS.parseLog(l);
         if (p2?.name === "SurveyCreated") {
           const surveyAddr = (l.address || "").toLowerCase();
           const creator = (p2.args.creator as string)?.toLowerCase?.() || "";
           const metaHash = String(p2.args.metaHash ?? "");
+          const ts = await blockTs(l.blockNumber);
 
           surveys[surveyAddr] = {
             ...(surveys[surveyAddr] || {}),
@@ -354,6 +405,7 @@ function readFundingSubmissions(): FundingSubmission[] {
             metaHash,
             funded: surveys[surveyAddr]?.funded ?? false,
             fundingTxHash: surveys[surveyAddr]?.fundingTxHash ?? null,
+            createdAt: surveys[surveyAddr]?.createdAt || ts, // NEW
           };
           knownSurveyAddrs.add(surveyAddr);
 
@@ -363,52 +415,70 @@ function readFundingSubmissions(): FundingSubmission[] {
             creator,
             metaHash,
             block: l.blockNumber,
+            ts,
             tx: l.transactionHash,
           });
         }
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     }
   }
 
-  // -------- Enrich with META (title, plannedReward, hash validation)
+  // -------- Enrich with META (+ predicates/gate)
   for (const sAddr of Array.from(knownSurveyAddrs)) {
-    const rec = surveys[sAddr] || (surveys[sAddr] = {} as any);
+    const rec = surveys[sAddr] || (surveys[sAddr] = {});
     const {
       meta,
       metaValid,
       title,
+      summary,
+      image,
       plannedRewardEth,
       plannedRewardWei,
       metaUrl,
+      gateAddr,
+      predicatesRaw,
+      epoch,
     } = readLocalMeta(sAddr);
 
-    // validate metaHash if both present
+    // validate metaHash
     let valid = metaValid;
     if (meta && rec.metaHash) {
       try {
         const localCanon = canonicalize(meta);
         const localHash = keccak256(toUtf8Bytes(localCanon));
-        valid = localHash.toLowerCase() === rec.metaHash.toLowerCase();
+        valid =
+          localHash.toLowerCase() === String(rec.metaHash || "").toLowerCase();
       } catch {
         valid = false;
       }
     }
 
+    // gate/predicates
+    const normPreds = normalizePredicates(predicatesRaw);
+    const gateAddrCandidate = (gateAddr || GATE_ADDR_HINT || "").toLowerCase();
+
     surveys[sAddr] = {
       ...rec,
       title,
+      summary,
+      image,
       plannedRewardEth,
       plannedRewardWei,
       metaValid: !!valid,
       metaUrl,
-      funded: rec.funded ?? false,
-      fundingTxHash: rec.fundingTxHash ?? null,
+      ...(gateAddrCandidate || normPreds.length || epoch
+        ? {
+            gate: {
+              addr: gateAddrCandidate,
+              predicates: normPreds,
+              epoch,
+            } as GateInfo,
+          }
+        : {}),
     };
   }
 
-  // -------- Pass 2: scan only known Survey addresses for inner events (questions, votes, prize, finalize)
+  // -------- Pass 2: inner events per known surveys
   if (knownSurveyAddrs.size > 0) {
     const addrs = Array.from(knownSurveyAddrs);
     const CHUNK = 50;
@@ -426,7 +496,6 @@ function readFundingSubmissions(): FundingSubmission[] {
             address: chunk as any,
           });
         } catch {
-          // Fallback if provider address-filtering fails
           logs = await provider.getLogs({ fromBlock: f, toBlock: t });
         }
 
@@ -436,6 +505,7 @@ function readFundingSubmissions(): FundingSubmission[] {
 
           try {
             const p = iS.parseLog(l);
+            const ts = await blockTs(l.blockNumber);
 
             if (p?.name === "QuestionAdded") {
               appendLedger({
@@ -444,10 +514,10 @@ function readFundingSubmissions(): FundingSubmission[] {
                 index: Number(p.args.index),
                 text: String(p.args.text),
                 block: l.blockNumber,
+                ts,
                 tx: l.transactionHash,
               });
             }
-
             if (p?.name === "Voted") {
               const voter = (p.args.voter as string).toLowerCase();
               balances[voter] = (balances[voter] || 0) + 1;
@@ -456,32 +526,46 @@ function readFundingSubmissions(): FundingSubmission[] {
                 survey: addr,
                 voter,
                 block: l.blockNumber,
+                ts,
                 tx: l.transactionHash,
               });
             }
-
             if (p?.name === "Finalized") {
+              const rulesHash = p.args.rulesHash
+                ? String(p.args.rulesHash)
+                : undefined;
+              const resultsHash = p.args.resultsHash
+                ? String(p.args.resultsHash)
+                : undefined;
+              const claimOpenAt = p.args.claimOpenAt
+                ? Number(p.args.claimOpenAt)
+                : undefined;
+              const claimDeadline = p.args.claimDeadline
+                ? Number(p.args.claimDeadline)
+                : undefined;
+
+              // persist on record
+              surveys[addr] = {
+                ...(surveys[addr] || {}),
+                finalizedAt: ts, // seconds
+                rulesHash,
+                resultsHash,
+                claimOpenAt: claimOpenAt ? toSec(claimOpenAt) : undefined,
+                claimDeadline: claimDeadline ? toSec(claimDeadline) : undefined,
+              };
+
               appendLedger({
                 t: "Finalized",
                 survey: addr,
                 block: l.blockNumber,
+                ts,
                 tx: l.transactionHash,
-                rulesHash: p.args.rulesHash
-                  ? String(p.args.rulesHash)
-                  : undefined,
-                resultsHash: p.args.resultsHash
-                  ? String(p.args.resultsHash)
-                  : undefined,
-                claimOpenAt: p.args.claimOpenAt
-                  ? Number(p.args.claimOpenAt)
-                  : undefined,
-                claimDeadline: p.args.claimDeadline
-                  ? Number(p.args.claimDeadline)
-                  : undefined,
+                rulesHash,
+                resultsHash,
+                claimOpenAt,
+                claimDeadline,
               });
             }
-
-            // --- Prize pool events (if your Survey.sol emits them) ---
             if (p?.name === "PrizeFunded") {
               const funder = (p.args.funder as string)?.toLowerCase?.() || "";
               const amountStr =
@@ -497,10 +581,10 @@ function readFundingSubmissions(): FundingSubmission[] {
                 funder,
                 amount: amountStr,
                 block: l.blockNumber,
+                ts,
                 tx: l.transactionHash,
               });
             }
-
             if (p?.name === "PrizeSwept") {
               const toAddr = (p.args.to as string)?.toLowerCase?.() || "";
               const amountStr =
@@ -516,37 +600,86 @@ function readFundingSubmissions(): FundingSubmission[] {
                 to: toAddr,
                 amount: amountStr,
                 block: l.blockNumber,
+                ts,
                 tx: l.transactionHash,
               });
             }
-          } catch {
-            // ignore parse errors on non-matching logs
-          }
+          } catch {}
         }
       }
     }
   }
 
-  // -------- Off-chain Treasury funding verification (Safe)
-  // User puts small JSON files into public/api/funding/<CHAIN_ID>/*.json with { survey, txHash }
-  // We verify: tx.to == TREASURY_SAFE, tx.from == survey.creator, tx.value >= plannedRewardWei, confirmations >= MIN_CONF
+  // -------- Backfill start/end via getters if missing, normalize ms→sec
+  for (const sAddr of Object.keys(surveys)) {
+    const rec = surveys[sAddr] || {};
+    const needsStart =
+      !Number.isFinite(Number(rec.start)) || Number(rec.start) <= 0;
+    const needsEnd = rec.end === undefined || rec.end === null;
+
+    if (needsStart || needsEnd) {
+      try {
+        const c = new Contract(
+          sAddr,
+          (await hre.artifacts.readArtifact("Survey")).abi,
+          provider
+        );
+        let st = 0,
+          en = 0;
+        if (typeof c.startTime === "function")
+          st = Number(await c.startTime().catch(() => 0));
+        else if (typeof c.start === "function")
+          st = Number(await c.start().catch(() => 0));
+        if (typeof c.endTime === "function")
+          en = Number(await c.endTime().catch(() => 0));
+        else if (typeof c.end === "function")
+          en = Number(await c.end().catch(() => 0));
+        surveys[sAddr].start = toSec(needsStart ? st : rec.start || 0);
+        surveys[sAddr].end = toSec(needsEnd ? en : rec.end ?? 0);
+        appendLedger({
+          t: "BackfilledSchedule",
+          survey: sAddr,
+          start: surveys[sAddr].start,
+          end: surveys[sAddr].end,
+        });
+      } catch {
+        if (needsStart && surveys[sAddr].start === undefined)
+          surveys[sAddr].start = 0;
+        if (needsEnd && surveys[sAddr].end === undefined)
+          surveys[sAddr].end = 0;
+      }
+    } else {
+      surveys[sAddr].start = toSec(rec.start);
+      surveys[sAddr].end = toSec(rec.end);
+    }
+
+    // normalize timestamp fields if exist
+    if (surveys[sAddr].createdAt)
+      surveys[sAddr].createdAt = toSec(surveys[sAddr].createdAt);
+    if (surveys[sAddr].finalizedAt)
+      surveys[sAddr].finalizedAt = toSec(surveys[sAddr].finalizedAt);
+    if (surveys[sAddr].claimOpenAt)
+      surveys[sAddr].claimOpenAt = toSec(surveys[sAddr].claimOpenAt);
+    if (surveys[sAddr].claimDeadline)
+      surveys[sAddr].claimDeadline = toSec(surveys[sAddr].claimDeadline);
+  }
+
+  // -------- Off-chain treasury funding verification
   if (TREASURY_SAFE) {
-    const subs = readFundingSubmissions(); // array of { survey, txHash }
+    const subs = readFundingSubmissions();
     for (const sub of subs) {
       const sAddr = sub.survey.toLowerCase();
       const rec = surveys[sAddr];
       if (!rec) continue;
-      if (rec.funded) continue; // already funded
+      if (rec.funded) continue;
 
       const plannedWei = BigInt(rec.plannedRewardWei || "0");
-      if (plannedWei === 0n) continue; // nothing to fund
+      if (plannedWei === 0n) continue;
 
       try {
         const tx = await provider.getTransaction(sub.txHash);
-        if (!tx) continue; // unknown tx
-        // Require receipt and confirmations
         const receipt = await provider.getTransactionReceipt(sub.txHash);
-        if (!receipt || receipt.status !== 1) continue;
+        if (!tx || !receipt || receipt.status !== 1) continue;
         const conf = latest - Number(receipt.blockNumber) + 1;
         if (conf < MIN_CONF) continue;
 
@@ -559,10 +692,8 @@ function readFundingSubmissions(): FundingSubmission[] {
           fromAddr === (rec.creator || "").toLowerCase() &&
           value >= plannedWei
         ) {
-          // Mark funded
           rec.funded = true;
           rec.fundingTxHash = sub.txHash;
-
           appendLedger({
             t: "TreasuryFunded",
             survey: sAddr,
@@ -574,64 +705,117 @@ function readFundingSubmissions(): FundingSubmission[] {
             confirmed: conf,
           });
         }
-      } catch {
-        // ignore invalid tx
-      }
+      } catch {}
     }
   }
 
-  // -------- Refresh live ETH balance for each survey (ground truth for on-chain pool)
+  // -------- Refresh live ETH balance (best effort)
   for (const sAddr of Object.keys(surveys)) {
     try {
-      const bal = await provider.getBalance(sAddr);
-      surveys[sAddr].prizeLiveBalance = bal.toString();
-    } catch {
-      /* ignore provider hiccups */
-    }
+      surveys[sAddr].prizeLiveBalance = (
+        await provider.getBalance(sAddr)
+      ).toString();
+    } catch {}
   }
 
   // ===== Save artifacts =====
+
+  // 1) Full map (surveys.json)
   fs.writeFileSync(FILES.BAL, JSON.stringify(balances, null, 2));
   fs.writeFileSync(FILES.SURV, JSON.stringify(surveys, null, 2));
 
-  // Flat list for the frontend (stable shape)
-  const list = Object.entries(surveys).map(([address, s]) => ({
-    address,
-    creator: s.creator,
-    startTime: s.start,
-    endTime: s.end,
-    metaHash: s.metaHash,
-    surveyType: s.surveyType ?? 0,
+  // 2) Flat list with normalized seconds and computed status (surveys.list.json)
+  const now = nowSec();
+  const list = Object.entries(surveys).map(([address, s]) => {
+    const createdSec = s.createdAt ? toSec(s.createdAt) : 0;
+    const startSec = s.start ? toSec(s.start) : 0;
+    const endSec = (s.end ?? 0) !== null ? toSec(s.end ?? 0) : 0;
+    const finalizedSec = s.finalizedAt ? toSec(s.finalizedAt) : 0;
+    const status = computeStatus(
+      startSec || null,
+      endSec || null,
+      finalizedSec || null,
+      now
+    );
 
-    // added for UX:
-    title: s.title ?? "Untitled",
-    plannedRewardEth: s.plannedRewardEth ?? "0",
-    plannedRewardWei: s.plannedRewardWei ?? "0",
-    metaValid: !!s.metaValid,
-    metaUrl: s.metaUrl,
-
-    // on-chain prize (if used):
-    prizeFunded: s.prizeFunded || "0",
-    prizeSwept: s.prizeSwept || "0",
-    prizeLiveBalance: s.prizeLiveBalance || undefined,
-
-    // off-chain treasury funding:
-    funded: s.funded ?? false,
-    fundingTxHash: s.fundingTxHash ?? null,
-  }));
+    return {
+      address: address.toLowerCase(),
+      creator: (s.creator || "").toLowerCase(),
+      // keep legacy fields for backward compatibility
+      startTime: startSec,
+      endTime: endSec,
+      // new normalized/explicit fields
+      createdSec,
+      startSec,
+      endSec,
+      finalizedSec,
+      status,
+      metaHash: s.metaHash || "",
+      surveyType: s.surveyType ?? 0,
+      title: s.title ?? "Untitled",
+      summary: s.summary ?? "",
+      image: s.image ?? "",
+      plannedRewardEth: s.plannedRewardEth ?? "0",
+      plannedRewardWei: s.plannedRewardWei ?? "0",
+      metaValid: !!s.metaValid,
+      metaUrl: s.metaUrl,
+      prizeFunded: s.prizeFunded || "0",
+      prizeSwept: s.prizeSwept || "0",
+      prizeLiveBalance: s.prizeLiveBalance || undefined,
+      funded: s.funded ?? false,
+      fundingTxHash: s.fundingTxHash ?? null,
+      rulesHash: s.rulesHash || undefined,
+      resultsHash: s.resultsHash || undefined,
+      claimOpenAt: s.claimOpenAt || undefined,
+      claimDeadline: s.claimDeadline || undefined,
+      gate: s.gate
+        ? {
+            addr: (s.gate.addr || "").toLowerCase(),
+            predicates: s.gate.predicates || [],
+            epoch: s.gate.epoch ?? undefined,
+          }
+        : undefined,
+    };
+  });
   fs.writeFileSync(FILES.LIST, JSON.stringify(list, null, 2));
 
-  // Richer state.json
+  // 3) gates.json for EIP-712
+  const gateAddrFromList =
+    list.find((x) => x.gate?.addr)?.gate?.addr || GATE_ADDR_HINT || "";
+  const eip712 = {
+    domain: {
+      name: "D-Scope Eligibility",
+      version: "1",
+      chainId: CHAIN_ID,
+      verifyingContract: gateAddrFromList,
+    },
+    types: {
+      Eligibility: [
+        { name: "user", type: "address" },
+        { name: "survey", type: "address" },
+        { name: "epoch", type: "uint256" },
+      ],
+    },
+  };
+  fs.writeFileSync(
+    FILES.GATES,
+    JSON.stringify({ eip712, updatedAt: now }, null, 2)
+  );
+
+  // 4) state.json
   fs.writeFileSync(
     FILES.STATE,
     JSON.stringify(
       {
         network: "zkSync Era Sepolia",
         chainId: CHAIN_ID,
-        factoryAddress: FACTORY,
+        factoryAddress: (FACTORIES[0] || FACTORY || "").toLowerCase(),
+        ...(FACTORIES.length
+          ? { factories: FACTORIES.map((a) => a.toLowerCase()) }
+          : {}),
         treasurySafe: TREASURY_SAFE || null,
         lastBlock: toBlock,
-        updatedAt: Math.floor(Date.now() / 1000),
+        updatedAt: now,
         allowlist: [],
       },
       null,
