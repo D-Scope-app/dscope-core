@@ -1,0 +1,22 @@
+{
+  "title": "Demo survey: shopping habits",
+  "summary": "Short pulse about where you shop online.",
+  "image": "",
+
+  "plannedReward": "0.01",
+
+  "gate": {
+    "addr": "0xe41d3fa062069fd5004c728dd1abed71cbf6377f",
+    "epoch": "1"
+  },
+
+  "predicates": {
+    "gender": { "in": ["male", "female"] },
+    "age_bucket": { "in": [18, 26, 31, 36, 41, 46, 51, 56, 60] },
+
+    "region": { "in": ["Europe"] },
+    "country": { "in": ["NL", "DE", "FR"] },
+
+    "human": true
+  }
+}
