@@ -28,8 +28,7 @@ jobs:
           node-version: 20
 
       - name: Install deps
-        run: npm ci
-
+        run: npm ci --no-fund --no-audit
       - name: Compile (for ABIs)
         run: npx hardhat compile
 
