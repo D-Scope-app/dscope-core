@@ -3,21 +3,23 @@ name: indexer
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *" # каждые 10 минут
   push:
-    branches: [main]
     paths:
       - "backend/**"
-      - "contracts/**"
       - "deployments/**"
       - ".github/workflows/indexer.yml"
+
+concurrency:
+  group: indexer
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout dscope-core
+      - name: Checkout core
         uses: actions/checkout@v4
 
       - name: Setup Node
@@ -25,34 +27,26 @@ jobs:
         with:
           node-version: 20
 
-      # npm ci требует package-lock.json — используем install
       - name: Install deps
-        run: |
-          npm install --no-audit --no-fund
+        run: npm ci
 
-      - name: Compile contracts (hardhat)
+      - name: Compile (for ABIs)
         run: npx hardhat compile
 
       - name: Run indexer (build JSON)
         env:
-          # --- сеть Scroll Sepolia ---
-          ZKSYNC_RPC: "https://sepolia-rpc.scroll.io"
+          RPC: "https://sepolia-rpc.scroll.io"
           CHAIN_ID: "534351"
 
-          # фабрика и пр.
           FACTORY: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
           FACTORIES: '["0x25465982fD4A87054c69d874cd6D89f69e1DE35c"]'
 
-          START_BLOCK: "12570332"
-          ONLY_LAST_BLOCKS: "0"
+          ONLY_LAST_BLOCKS: "50000"
           MIN_CONF: "2"
-          GATE_ADDR_HINT: "0x912bB1ed08b82f8BE19eCcCF2f271eCe28364B3A"
-
-          # куда сложить артефакты для публикации
           OUTPUT_DIR: "./out-api"
         run: npx ts-node --transpile-only backend/ci-indexer.ts
 
-      - name: Checkout dscope-api (publish static API)
+      - name: Checkout dscope-api
         uses: actions/checkout@v4
         with:
           repository: D-Scope-app/dscope-api
@@ -64,7 +58,7 @@ jobs:
           rsync -a --delete ./out-api/ ./api-repo/api/
           cd api-repo
           git config user.email "bot@dscope.app"
-          git config user.name "dscope-bot"
+          git config user.name  "dscope-bot"
           git add api
           if git diff --cached --quiet; then
             echo "No changes to publish."
