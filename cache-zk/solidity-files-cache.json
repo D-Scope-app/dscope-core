@@ -1,75 +1,16 @@
 {
   "_format": "hh-sol-cache-2",
   "files": {
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\factory\\ISurveyFactory.sol": {
-      "lastModificationDate": 1757151994019,
-      "contentHash": "32107f1a053670e419af2a6353ba7555",
-      "sourceName": "contracts/factory/ISurveyFactory.sol",
-      "solcConfig": {
-        "version": "0.8.20",
-        "settings": {
-          "optimizer": {
-            "enabled": true,
-            "mode": "3",
-            "runs": 200
-          },
-          "evmVersion": "paris",
-          "outputSelection": {
-            "*": {
-              "*": [
-                "abi",
-                "evm.methodIdentifiers",
-                "metadata"
-              ],
-              "": [
-                "ast"
-              ]
-            }
-          },
-          "detectMissingLibraries": false,
-          "forceEVMLA": false,
-          "enableEraVMExtensions": false,
-          "codegen": "evmla",
-          "libraries": {}
-        },
-        "eraVersion": "1.0.2",
-        "zksolc": {
-          "version": "1.5.15",
-          "compilerSource": "binary",
-          "settings": {
-            "optimizer": {
-              "enabled": true,
-              "mode": "3",
-              "runs": 200
-            },
-            "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
-            "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
-            "areLibrariesMissing": false,
-            "experimental": {},
-            "codegen": "evmla",
-            "libraries": {},
-            "enableEraVMExtensions": false,
-            "forceEVMLA": false
-          }
-        }
-      },
-      "imports": [],
-      "versionPragmas": [
-        "^0.8.20"
-      ],
-      "artifacts": []
-    },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\factory\\SurveyFactory.sol": {
-      "lastModificationDate": 1757150257100,
-      "contentHash": "19d0d39a1acea905484ee81dc546a124",
+    "C:\\dscope-core\\contracts\\factory\\SurveyFactory.sol": {
+      "lastModificationDate": 1758535274423,
+      "contentHash": "3cc18f704320bdd9285ced3573361112",
       "sourceName": "contracts/factory/SurveyFactory.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
           "optimizer": {
             "enabled": true,
-            "mode": "3",
-            "runs": 200
+            "mode": "3"
           },
           "evmVersion": "paris",
           "outputSelection": {
@@ -87,7 +28,7 @@
           "detectMissingLibraries": false,
           "forceEVMLA": false,
           "enableEraVMExtensions": false,
-          "codegen": "evmla",
+          "codegen": "yul",
           "libraries": {}
         },
         "eraVersion": "1.0.2",
@@ -97,14 +38,13 @@
           "settings": {
             "optimizer": {
               "enabled": true,
-              "mode": "3",
-              "runs": 200
+              "mode": "3"
             },
             "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
             "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
             "areLibrariesMissing": false,
             "experimental": {},
-            "codegen": "evmla",
+            "codegen": "yul",
             "libraries": {},
             "enableEraVMExtensions": false,
             "forceEVMLA": false
@@ -121,17 +61,16 @@
         "SurveyFactory"
       ]
     },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\survey\\Survey.sol": {
-      "lastModificationDate": 1757150257100,
-      "contentHash": "e276f811e8ec32666155c72184be31e2",
+    "C:\\dscope-core\\contracts\\survey\\Survey.sol": {
+      "lastModificationDate": 1758535274439,
+      "contentHash": "f3bfe68c063efa44410b21ddee95ba4c",
       "sourceName": "contracts/survey/Survey.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
           "optimizer": {
             "enabled": true,
-            "mode": "3",
-            "runs": 200
+            "mode": "3"
           },
           "evmVersion": "paris",
           "outputSelection": {
@@ -149,7 +88,7 @@
           "detectMissingLibraries": false,
           "forceEVMLA": false,
           "enableEraVMExtensions": false,
-          "codegen": "evmla",
+          "codegen": "yul",
           "libraries": {}
         },
         "eraVersion": "1.0.2",
@@ -159,14 +98,73 @@
           "settings": {
             "optimizer": {
               "enabled": true,
-              "mode": "3",
-              "runs": 200
+              "mode": "3"
             },
             "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
             "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
             "areLibrariesMissing": false,
             "experimental": {},
-            "codegen": "evmla",
+            "codegen": "yul",
+            "libraries": {},
+            "enableEraVMExtensions": false,
+            "forceEVMLA": false
+          }
+        }
+      },
+      "imports": [
+        "../gate/IEligibilityGate.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "Survey"
+      ]
+    },
+    "C:\\dscope-core\\contracts\\gate\\IEligibilityGate.sol": {
+      "lastModificationDate": 1758535274426,
+      "contentHash": "2fe9c78e79e3508e3f2d0591a060b2e4",
+      "sourceName": "contracts/gate/IEligibilityGate.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "mode": "3"
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          },
+          "detectMissingLibraries": false,
+          "forceEVMLA": false,
+          "enableEraVMExtensions": false,
+          "codegen": "yul",
+          "libraries": {}
+        },
+        "eraVersion": "1.0.2",
+        "zksolc": {
+          "version": "1.5.15",
+          "compilerSource": "binary",
+          "settings": {
+            "optimizer": {
+              "enabled": true,
+              "mode": "3"
+            },
+            "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
+            "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
+            "areLibrariesMissing": false,
+            "experimental": {},
+            "codegen": "yul",
             "libraries": {},
             "enableEraVMExtensions": false,
             "forceEVMLA": false
@@ -178,20 +176,19 @@
         "^0.8.20"
       ],
       "artifacts": [
-        "Survey"
+        "IEligibilityGate"
       ]
     },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\Greeter.sol": {
-      "lastModificationDate": 1757151994019,
-      "contentHash": "1eed9412b0e8795b212c6fca9d641bb0",
-      "sourceName": "contracts/Greeter.sol",
+    "C:\\dscope-core\\contracts\\gate\\EligibilityGateEIP712.sol": {
+      "lastModificationDate": 1758535274424,
+      "contentHash": "09325d3d1165d4b4d086e148840893bf",
+      "sourceName": "contracts/gate/EligibilityGateEIP712.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
           "optimizer": {
             "enabled": true,
-            "mode": "3",
-            "runs": 200
+            "mode": "3"
           },
           "evmVersion": "paris",
           "outputSelection": {
@@ -209,7 +206,7 @@
           "detectMissingLibraries": false,
           "forceEVMLA": false,
           "enableEraVMExtensions": false,
-          "codegen": "evmla",
+          "codegen": "yul",
           "libraries": {}
         },
         "eraVersion": "1.0.2",
@@ -219,14 +216,74 @@
           "settings": {
             "optimizer": {
               "enabled": true,
-              "mode": "3",
-              "runs": 200
+              "mode": "3"
             },
             "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
             "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
             "areLibrariesMissing": false,
             "experimental": {},
-            "codegen": "evmla",
+            "codegen": "yul",
+            "libraries": {},
+            "enableEraVMExtensions": false,
+            "forceEVMLA": false
+          }
+        }
+      },
+      "imports": [
+        "./IEligibilityGate.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "EligibilityGateEIP712",
+        "IERC1271"
+      ]
+    },
+    "C:\\dscope-core\\contracts\\Greeter.sol": {
+      "lastModificationDate": 1758535274412,
+      "contentHash": "1eed9412b0e8795b212c6fca9d641bb0",
+      "sourceName": "contracts/Greeter.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "mode": "3"
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          },
+          "detectMissingLibraries": false,
+          "forceEVMLA": false,
+          "enableEraVMExtensions": false,
+          "codegen": "yul",
+          "libraries": {}
+        },
+        "eraVersion": "1.0.2",
+        "zksolc": {
+          "version": "1.5.15",
+          "compilerSource": "binary",
+          "settings": {
+            "optimizer": {
+              "enabled": true,
+              "mode": "3"
+            },
+            "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
+            "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
+            "areLibrariesMissing": false,
+            "experimental": {},
+            "codegen": "yul",
             "libraries": {},
             "enableEraVMExtensions": false,
             "forceEVMLA": false
@@ -241,17 +298,16 @@
         "Greeter"
       ]
     },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\reward\\IRewardPool.sol": {
-      "lastModificationDate": 1757151994019,
-      "contentHash": "32107f1a053670e419af2a6353ba7555",
-      "sourceName": "contracts/reward/IRewardPool.sol",
+    "C:\\dscope-core\\contracts\\release\\SurveyFactoryFlat.sol": {
+      "lastModificationDate": 1758535274428,
+      "contentHash": "20cab8446175ec96530899271dfa72f9",
+      "sourceName": "contracts/release/SurveyFactoryFlat.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
           "optimizer": {
             "enabled": true,
-            "mode": "3",
-            "runs": 200
+            "mode": "3"
           },
           "evmVersion": "paris",
           "outputSelection": {
@@ -269,7 +325,7 @@
           "detectMissingLibraries": false,
           "forceEVMLA": false,
           "enableEraVMExtensions": false,
-          "codegen": "evmla",
+          "codegen": "yul",
           "libraries": {}
         },
         "eraVersion": "1.0.2",
@@ -279,14 +335,13 @@
           "settings": {
             "optimizer": {
               "enabled": true,
-              "mode": "3",
-              "runs": 200
+              "mode": "3"
             },
             "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
             "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
             "areLibrariesMissing": false,
             "experimental": {},
-            "codegen": "evmla",
+            "codegen": "yul",
             "libraries": {},
             "enableEraVMExtensions": false,
             "forceEVMLA": false
@@ -297,123 +352,11 @@
       "versionPragmas": [
         "^0.8.20"
       ],
-      "artifacts": []
-    },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\survey\\ISurvey.sol": {
-      "lastModificationDate": 1757151994019,
-      "contentHash": "32107f1a053670e419af2a6353ba7555",
-      "sourceName": "contracts/survey/ISurvey.sol",
-      "solcConfig": {
-        "version": "0.8.20",
-        "settings": {
-          "optimizer": {
-            "enabled": true,
-            "mode": "3",
-            "runs": 200
-          },
-          "evmVersion": "paris",
-          "outputSelection": {
-            "*": {
-              "*": [
-                "abi",
-                "evm.methodIdentifiers",
-                "metadata"
-              ],
-              "": [
-                "ast"
-              ]
-            }
-          },
-          "detectMissingLibraries": false,
-          "forceEVMLA": false,
-          "enableEraVMExtensions": false,
-          "codegen": "evmla",
-          "libraries": {}
-        },
-        "eraVersion": "1.0.2",
-        "zksolc": {
-          "version": "1.5.15",
-          "compilerSource": "binary",
-          "settings": {
-            "optimizer": {
-              "enabled": true,
-              "mode": "3",
-              "runs": 200
-            },
-            "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
-            "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
-            "areLibrariesMissing": false,
-            "experimental": {},
-            "codegen": "evmla",
-            "libraries": {},
-            "enableEraVMExtensions": false,
-            "forceEVMLA": false
-          }
-        }
-      },
-      "imports": [],
-      "versionPragmas": [
-        "^0.8.20"
-      ],
-      "artifacts": []
-    },
-    "C:\\Users\\Антон\\OneDrive\\Рабочий стол\\D-Scope smart\\dscope-core\\contracts\\verifier\\zkVerifier.sol": {
-      "lastModificationDate": 1757151994019,
-      "contentHash": "32107f1a053670e419af2a6353ba7555",
-      "sourceName": "contracts/verifier/zkVerifier.sol",
-      "solcConfig": {
-        "version": "0.8.20",
-        "settings": {
-          "optimizer": {
-            "enabled": true,
-            "mode": "3",
-            "runs": 200
-          },
-          "evmVersion": "paris",
-          "outputSelection": {
-            "*": {
-              "*": [
-                "abi",
-                "evm.methodIdentifiers",
-                "metadata"
-              ],
-              "": [
-                "ast"
-              ]
-            }
-          },
-          "detectMissingLibraries": false,
-          "forceEVMLA": false,
-          "enableEraVMExtensions": false,
-          "codegen": "evmla",
-          "libraries": {}
-        },
-        "eraVersion": "1.0.2",
-        "zksolc": {
-          "version": "1.5.15",
-          "compilerSource": "binary",
-          "settings": {
-            "optimizer": {
-              "enabled": true,
-              "mode": "3",
-              "runs": 200
-            },
-            "compilerPath": "C:\\Users\\Антон\\AppData\\Local\\hardhat-nodejs\\Cache\\compilers-v2\\zksolc\\zksolc-v1.5.15",
-            "missingLibrariesPath": "./.zksolc-libraries-cache/missingLibraryDependencies.json",
-            "areLibrariesMissing": false,
-            "experimental": {},
-            "codegen": "evmla",
-            "libraries": {},
-            "enableEraVMExtensions": false,
-            "forceEVMLA": false
-          }
-        }
-      },
-      "imports": [],
-      "versionPragmas": [
-        "^0.8.20"
-      ],
-      "artifacts": []
+      "artifacts": [
+        "IEligibilityGate",
+        "SurveyFactoryFlat",
+        "SurveyFlat"
+      ]
     }
   }
 }

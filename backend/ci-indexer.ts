@@ -2,30 +2,35 @@
 // @ts-nocheck
 
 /**
- * D-Scope V1 indexer (no server) — single/multi factory, Gate/Predicates, ms→sec, backfill, computed status.
+ * D-Scope V1 indexer — single/multi factory, Gate/Predicates, ms→sec, backfill, computed status.
  *
- * ENV:
- *   ZKSYNC_RPC=https://sepolia.era.zksync.dev
- *   FACTORY_ADDRESS=0x045d5aad5584da4a0b507d3d28876b3328e113ec
+ * ENV (обновлено под Scroll):
+ *   SCROLL_RPC=https://sepolia-rpc.scroll.io          // новый ключ (приоритетный)
+ *   RPC_URL=https://sepolia-rpc.scroll.io             // альтернативный
+ *   ZKSYNC_RPC=...                                    // старый ключ (fallback, чтобы не ломать CI)
+ *   FACTORY_ADDRESS=0x...
  *   # FACTORIES=0x...,0x...
- *   START_BLOCK=5783316
- *   CHAIN_ID=300
- *   TREASURY_SAFE=0xabfd53eb3c6c2453bed90fa756ffe509e35eb60b
- *   MIN_CONFIRMATIONS=2
- *   GATE_ADDR=0xe41d3fa062069fd5004c728dd1abed71cbf6377f
+ *   START_BLOCK=...
  *   ONLY_LAST_BLOCKS=0
+ *   CHAIN_ID=534351
+ *   TREASURY_SAFE=0x...
+ *   MIN_CONFIRMATIONS=2
+ *   GATE_ADDR=0x...
+ *   OUTPUT_DIR=../dscope-api/api
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { config as dotenvConfig } from "dotenv";
-import { Provider } from "zksync-ethers";
+// ↓↓↓ ZKSync Provider УБРАН; для Scroll используем стандартный ethers провайдер
+// import { Provider } from "zksync-ethers";
 import {
   Interface,
   keccak256,
   toUtf8Bytes,
   parseEther,
   Contract,
+  JsonRpcProvider, // ← стандартный провайдер ethers для Scroll
 } from "ethers";
 import * as hre from "hardhat";
 
@@ -51,7 +56,6 @@ function canonicalize(obj: any) {
 }
 function toSec(x: any) {
   const n = Number(x || 0);
-  // treat anything > ~ 2e10 as ms
   return n > 2e10 ? Math.floor(n / 1000) : Math.floor(n);
 }
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -113,22 +117,23 @@ function normalizePredicates(raw: any): Predicate[] {
     });
   if (Array.isArray(raw?.region?.in))
     out.push({ key: "region", op: "in", value: raw.region.in.map(String) });
-
   if (raw?.human !== undefined)
     out.push({ key: "human", op: "==", value: !!raw.human });
   if (Array.isArray(raw?.extra))
     for (const e of raw.extra)
       out.push({ key: String(e.key), op: String(e.op), value: e.value });
+
   return out;
 }
 
-// ---------- Config ----------
-const CHAIN_ID = Number(process.env.CHAIN_ID || 300);
+// ---------- Config (обновлено под Scroll) ----------
+const CHAIN_ID = Number(process.env.CHAIN_ID || 534351); // ← Scroll Sepolia
 const RPC =
-  process.env.ZKSYNC_RPC ||
+  process.env.SCROLL_RPC || // ← приоритетный ключ для Scroll
   process.env.RPC_URL ||
+  process.env.ZKSYNC_RPC || // ← старый ключ как fallback
   ((hre.network?.config as any)?.url as string | undefined) ||
-  "https://sepolia.era.zksync.dev";
+  "https://sepolia-rpc.scroll.io"; // ← дефолт для Scroll Sepolia
 
 let FACTORY: string = (process.env.FACTORY_ADDRESS || process.env.FACTORY || "")
   .toLowerCase()
@@ -142,12 +147,14 @@ if (process.env.FACTORIES) {
 }
 if (FACTORY && !FACTORIES.includes(FACTORY)) FACTORIES.unshift(FACTORY);
 
-// Fallback к deployments
+// Fallback к deployments (обновлён: сначала scroll, потом старый zksync)
+function readDeployField(fileName: string, def: any) {
+  return readJSON(path.resolve(process.cwd(), "deployments", fileName), def);
+}
 if (!FACTORY && FACTORIES.length === 0) {
-  const dep = readJSON(
-    path.resolve(process.cwd(), "deployments", "zkSyncSepolia.json"),
-    null as any
-  );
+  const depScroll = readDeployField("scrollSepolia.json", null as any);
+  const depZk = readDeployField("zkSyncSepolia.json", null as any); // совместимость
+  const dep = depScroll || depZk;
   if (dep?.factory?.address)
     FACTORY = String(dep.factory.address).toLowerCase();
   if (FACTORY) FACTORIES.unshift(FACTORY);
@@ -156,29 +163,37 @@ if (!FACTORY && FACTORIES.length === 0) {
 const START =
   Number(process.env.START_BLOCK) ||
   Number(
-    readJSON(path.resolve(process.cwd(), "deployments", "zkSyncSepolia.json"), {
-      factory: { deployBlock: 0 },
-    })?.factory?.deployBlock || 0
+    readDeployField("scrollSepolia.json", { factory: { deployBlock: 0 } })
+      ?.factory?.deployBlock ??
+      readDeployField("zkSyncSepolia.json", { factory: { deployBlock: 0 } })
+        ?.factory?.deployBlock ??
+      0
   );
+
 const ONLY_LAST = Number(process.env.ONLY_LAST_BLOCKS || 0);
 
 const TREASURY_SAFE = String(process.env.TREASURY_SAFE || "").toLowerCase();
 const MIN_CONF = Number(
   process.env.MIN_CONFIRMATIONS || process.env.MIN_CONF || 2
 );
-
 const GATE_ADDR_HINT = (process.env.GATE_ADDR || "").toLowerCase();
 
-console.log("[Indexer] Effective config:", {
+const OUTPUT_DIR =
+  process.env.OUTPUT_DIR && process.env.OUTPUT_DIR.trim()
+    ? path.resolve(process.cwd(), process.env.OUTPUT_DIR.trim())
+    : path.resolve(process.cwd(), "../dscope-api/api");
+
+console.log("[Indexer] Config", {
   RPC,
+  CHAIN_ID,
   FACTORY,
   FACTORIES,
   START_BLOCK: START,
   ONLY_LAST_BLOCKS: ONLY_LAST,
-  CHAIN_ID,
   TREASURY_SAFE,
   MIN_CONF,
   GATE_ADDR_HINT,
+  OUTPUT_DIR,
 });
 if (!FACTORY && FACTORIES.length === 0)
   throw new Error(
@@ -186,7 +201,7 @@ if (!FACTORY && FACTORIES.length === 0)
   );
 
 // ---------- Output files ----------
-const outDir = path.resolve(process.cwd(), "../dscope-api/api");
+const outDir = OUTPUT_DIR;
 const metaDir = path.join(outDir, "meta", String(CHAIN_ID));
 const fundingDir = path.join(outDir, "funding", String(CHAIN_ID));
 
@@ -291,7 +306,7 @@ function computeStatus(
   if (f) return "past";
   if (e && now >= e) return "past";
   if (s && now < s) return "upcoming";
-  return "active"; // start now OR open-ended
+  return "active";
 }
 
 // ---------- Main ----------
@@ -303,7 +318,8 @@ function computeStatus(
   const iF = new Interface(FactoryArtifact.abi);
   const iS = new Interface(SurveyArtifact.abi);
 
-  const provider = new Provider(RPC);
+  // ↓↓↓ заменили провайдер на ethers.JsonRpcProvider (Scroll)
+  const provider = new JsonRpcProvider(RPC);
   const state = readJSON(FILES.STATE, { lastBlock: 0 });
   const latest = await provider.getBlockNumber();
 
@@ -315,7 +331,10 @@ function computeStatus(
 
   if (fromBlock > toBlock) {
     console.log(`[Indexer] No new blocks. last=${state.lastBlock}`);
-    process.exit(0);
+    console.log(`[Indexer] Scan: ${fromBlock} → ${toBlock}`);
+    // даже если нет новых — перезаписываем state/gates для консистентности
+  } else {
+    console.log(`[Indexer] Scan: ${fromBlock} → ${toBlock}`);
   }
 
   const balances: Record<string, number> = readJSON(FILES.BAL, {});
@@ -324,8 +343,9 @@ function computeStatus(
     Object.keys(surveys).map((a) => a.toLowerCase())
   );
 
-  console.log(`[Indexer] Range: ${fromBlock} -> ${toBlock}`);
-  const BATCH = 100;
+  // Размер шагов — адресная фильтрация позволяет безопасно увеличить
+  const BATCH = 1000;
+  const CHUNK = 50;
 
   // block timestamp cache
   const tsCache = new Map<number, number>();
@@ -338,16 +358,37 @@ function computeStatus(
     return ts;
   }
 
-  // -------- Pass 1: scan all logs (factories + survey contracts)
-  for (let f = fromBlock; f <= toBlock; f += BATCH) {
-    const t = Math.min(f + BATCH - 1, toBlock);
-    const logs = await provider.getLogs({ fromBlock: f, toBlock: t });
+  // -------- Pass 1: сканируем только логи фабрик (строго по адресам!)
+  if (fromBlock <= toBlock && FACTORIES.length) {
+    for (let f = fromBlock; f <= toBlock; f += BATCH) {
+      const t = Math.min(f + BATCH - 1, toBlock);
 
-    for (const l of logs) {
-      const addr = (l.address || "").toLowerCase();
+      let logs: any[] = [];
+      try {
+        logs = await provider.getLogs({
+          fromBlock: f,
+          toBlock: t,
+          address: FACTORIES as any,
+        });
+      } catch {
+        // провайдер мог не принять массив адресов — обходим по одному
+        logs = [];
+        for (const fa of FACTORIES) {
+          try {
+            const part = await provider.getLogs({
+              fromBlock: f,
+              toBlock: t,
+              address: fa as any,
+            });
+            logs.push(...part);
+          } catch {}
+        }
+      }
 
-      // Factory events
-      if (FACTORIES.includes(addr)) {
+      for (const l of logs) {
+        const addr = (l.address || "").toLowerCase();
+        if (!FACTORIES.includes(addr)) continue;
+
         try {
           const p = iF.parseLog(l);
           if (p?.name === "SurveyDeployed" || p?.name === "SurveyCreated") {
@@ -359,6 +400,10 @@ function computeStatus(
             const metaHash = String(p.args.metaHash ?? "");
             const ts = await blockTs(l.blockNumber);
 
+            // (не scroll-специфично) plannedReward/initialValue можно извлечь при наличии
+            // const plannedReward = p.args.plannedReward?.toString?.();
+            // const initialValue = p.args.initialValue?.toString?.();
+
             surveys[survey] = {
               ...(surveys[survey] || {}),
               creator,
@@ -368,7 +413,7 @@ function computeStatus(
               surveyType,
               funded: surveys[survey]?.funded ?? false,
               fundingTxHash: surveys[survey]?.fundingTxHash ?? null,
-              createdAt: surveys[survey]?.createdAt || ts, // NEW
+              createdAt: surveys[survey]?.createdAt || ts,
             };
             knownSurveyAddrs.add(survey);
 
@@ -387,39 +432,6 @@ function computeStatus(
           }
         } catch {}
       }
-
-      // Survey's own SurveyCreated (for safety)
-      try {
-        const p2 = iS.parseLog(l);
-        if (p2?.name === "SurveyCreated") {
-          const surveyAddr = (l.address || "").toLowerCase();
-          const creator = (p2.args.creator as string)?.toLowerCase?.() || "";
-          const metaHash = String(p2.args.metaHash ?? "");
-          const ts = await blockTs(l.blockNumber);
-
-          surveys[surveyAddr] = {
-            ...(surveys[surveyAddr] || {}),
-            creator,
-            start: surveys[surveyAddr]?.start ?? 0,
-            end: surveys[surveyAddr]?.end ?? 0,
-            metaHash,
-            funded: surveys[surveyAddr]?.funded ?? false,
-            fundingTxHash: surveys[surveyAddr]?.fundingTxHash ?? null,
-            createdAt: surveys[surveyAddr]?.createdAt || ts, // NEW
-          };
-          knownSurveyAddrs.add(surveyAddr);
-
-          appendLedger({
-            t: "SurveyCreated",
-            survey: surveyAddr,
-            creator,
-            metaHash,
-            block: l.blockNumber,
-            ts,
-            tx: l.transactionHash,
-          });
-        }
-      } catch {}
     }
   }
 
@@ -478,17 +490,17 @@ function computeStatus(
     };
   }
 
-  // -------- Pass 2: inner events per known surveys
-  if (knownSurveyAddrs.size > 0) {
+  // -------- Pass 2: скан логов по известным адресам опросов (строго адресно!)
+  if (knownSurveyAddrs.size > 0 && fromBlock <= toBlock) {
     const addrs = Array.from(knownSurveyAddrs);
-    const CHUNK = 50;
 
     for (let f = fromBlock; f <= toBlock; f += BATCH) {
       const t = Math.min(f + BATCH - 1, toBlock);
 
       for (let i = 0; i < addrs.length; i += CHUNK) {
         const chunk = addrs.slice(i, i + CHUNK);
-        let logs;
+
+        let logs: any[] = [];
         try {
           logs = await provider.getLogs({
             fromBlock: f,
@@ -496,7 +508,18 @@ function computeStatus(
             address: chunk as any,
           });
         } catch {
-          logs = await provider.getLogs({ fromBlock: f, toBlock: t });
+          // НИКАКИХ запросов по всему чейну — только адресно
+          logs = [];
+          for (const a of chunk) {
+            try {
+              const part = await provider.getLogs({
+                fromBlock: f,
+                toBlock: t,
+                address: a as any,
+              });
+              logs.push(...part);
+            } catch {}
+          }
         }
 
         for (const l of logs) {
@@ -544,10 +567,9 @@ function computeStatus(
                 ? Number(p.args.claimDeadline)
                 : undefined;
 
-              // persist on record
               surveys[addr] = {
                 ...(surveys[addr] || {}),
-                finalizedAt: ts, // seconds
+                finalizedAt: ts,
                 rulesHash,
                 resultsHash,
                 claimOpenAt: claimOpenAt ? toSec(claimOpenAt) : undefined,
@@ -653,7 +675,6 @@ function computeStatus(
       surveys[sAddr].end = toSec(rec.end);
     }
 
-    // normalize timestamp fields if exist
     if (surveys[sAddr].createdAt)
       surveys[sAddr].createdAt = toSec(surveys[sAddr].createdAt);
     if (surveys[sAddr].finalizedAt)
@@ -741,10 +762,8 @@ function computeStatus(
     return {
       address: address.toLowerCase(),
       creator: (s.creator || "").toLowerCase(),
-      // keep legacy fields for backward compatibility
       startTime: startSec,
       endTime: endSec,
-      // new normalized/explicit fields
       createdSec,
       startSec,
       endSec,
@@ -775,6 +794,7 @@ function computeStatus(
             epoch: s.gate.epoch ?? undefined,
           }
         : undefined,
+      chainId: CHAIN_ID, // ← полезно явно класть в лист
     };
   });
   fs.writeFileSync(FILES.LIST, JSON.stringify(list, null, 2));
@@ -784,7 +804,7 @@ function computeStatus(
     list.find((x) => x.gate?.addr)?.gate?.addr || GATE_ADDR_HINT || "";
   const eip712 = {
     domain: {
-      name: "D-Scope Eligibility",
+      name: "D-Scope Eligibility", // оставил без изменений (это не про Scroll)
       version: "1",
       chainId: CHAIN_ID,
       verifyingContract: gateAddrFromList,
@@ -802,12 +822,12 @@ function computeStatus(
     JSON.stringify({ eip712, updatedAt: now }, null, 2)
   );
 
-  // 4) state.json
+  // 4) state.json (обновлено поле network и chainId)
   fs.writeFileSync(
     FILES.STATE,
     JSON.stringify(
       {
-        network: "zkSync Era Sepolia",
+        network: "Scroll Sepolia",
         chainId: CHAIN_ID,
         factoryAddress: (FACTORIES[0] || FACTORY || "").toLowerCase(),
         ...(FACTORIES.length
@@ -823,8 +843,9 @@ function computeStatus(
     )
   );
 
+  console.log(`[Indexer] Done. → ${outDir}`);
   console.log(
-    `[Indexer] Done. lastBlock=${toBlock} | surveys=${
+    `[Indexer] lastBlock=${toBlock} | surveys=${
       Object.keys(surveys).length
     } | voters=${Object.keys(balances).length}`
   );

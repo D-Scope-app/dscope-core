@@ -1,24 +1,17 @@
-name: Indexer to Public API
+name: indexer
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
   push:
     paths:
       - "backend/**"
       - ".github/workflows/indexer.yml"
-  schedule:
-    - cron: "*/5 * * * *" # каждые ~5 минут
-  repository_dispatch:
-    types: [run-indexer] # ручной триггер через API
-
-concurrency:
-  group: indexer
-  cancel-in-progress: false
 
 jobs:
-  push:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout dscope-core
@@ -28,62 +21,53 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install deps
         run: npm ci
 
-      # ВАЖНО: indexer.ts поддерживает OUTPUT_DIR — пишем артефакты во временную папку
       - name: Run indexer (build JSON)
         env:
-          ZKSYNC_RPC: https://sepolia.era.zksync.dev
-          RPC_URL: https://sepolia.era.zksync.dev
-          CHAIN_ID: "300"
-          FACTORY_ADDRESS: 0x045d5aAD5584DA4a0b507d3d28876b3328e113Ec
-          # При необходимости можно перечислить несколько фабрик через FACTORIES
-          # FACTORIES: 0x...,0x...
-          START_BLOCK: "5783082"
-          GATE_ADDR: 0xE41D3FA062069fD5004c728DD1ABed71cBF6377F
-          OUTPUT_DIR: ./out-api
-        run: |
-          set -e
-          mkdir -p ./out-api
-          npx ts-node --transpile-only backend/ci-indexer.ts
-          ls -la ./out-api || true
+          # --- сеть Scroll Sepolia ---
+          ZKSYNC_RPC: "https://sepolia-rpc.scroll.io" # ci-indexer.ts читает ZKSYNC_RPC или RPC_URL
+          RPC_URL: "https://sepolia-rpc.scroll.io"
+          CHAIN_ID: "534351"
 
-      - name: Checkout dscope-api
+          # --- фабрика(и) на Scroll ---
+          FACTORY: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
+          FACTORIES: '["0x25465982fD4A87054c69d874cd6D89f69e1DE35c"]'
+
+          # --- откуда сканить логи ---
+          START_BLOCK: "PUT_DEPLOY_BLOCK" # поставь блок деплоя фабрики
+          ONLY_LAST_BLOCKS: "0" # можно поставить "100000" чтобы ускорить первый прогон
+          MIN_CONF: "2"
+
+          # --- опционально ---
+          TREASURY_SAFE: "0xABfd53eB3C6c2453bED90fa756ffE509e35eB60b"
+          GATE_ADDR: "0x912bB1eD08b82f8BE19EcCcf2F271eCe28364b3a"
+
+          # --- куда складываем артефакты перед публикацией ---
+          OUTPUT_DIR: "./out-api"
+        run: npx ts-node --transpile-only backend/ci-indexer.ts
+
+      - name: Checkout dscope-api (publish static API)
         uses: actions/checkout@v4
         with:
           repository: D-Scope-app/dscope-api
           token: ${{ secrets.API_PUSH_TOKEN }}
-          path: dscope-api
+          path: api-repo
+          persist-credentials: false
 
-      - name: Sync artifacts into dscope-api/api
+      - name: Publish API artifacts
         run: |
-          set -e
-          rm -rf dscope-api/api
-          mkdir -p dscope-api/api
-          cp -r out-api/* dscope-api/api/ || true
-          find dscope-api/api -maxdepth 2 -type f -printf "%P\n" | sort
-
-      - name: Commit & push
-        working-directory: dscope-api
-        run: |
-          set -e
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
+          rsync -a --delete ./out-api/ ./api-repo/api/
+          cd api-repo
+          git config user.email "bot@dscope.app"
+          git config user.name "dscope-bot"
           git add api
           if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
+            echo "No changes to publish."
+          else
+            git commit -m "ci(indexer): refresh artifacts"
+            git push https://x-access-token:${{ secrets.API_PUSH_TOKEN }}@github.com/D-Scope-app/dscope-api HEAD:main
           fi
-
-          git commit -m "chore(api): refresh indexed artifacts (CI)"
-          # подхватываем возможные внешние коммиты, чтобы push не отвалился
-          git pull --rebase origin main || true
-          git push origin main
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "✅ Indexer finished and artifacts synced to D-Scope-app/dscope-api/api"
