@@ -5,8 +5,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   push:
+    branches: [main]
     paths:
       - "backend/**"
+      - "contracts/**"
+      - "deployments/**"
       - ".github/workflows/indexer.yml"
 
 jobs:
@@ -21,32 +24,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
+      # npm ci требует package-lock.json — используем install
       - name: Install deps
-        run: npm ci
+        run: |
+          npm install --no-audit --no-fund
+
+      - name: Compile contracts (hardhat)
+        run: npx hardhat compile
 
       - name: Run indexer (build JSON)
         env:
           # --- сеть Scroll Sepolia ---
-          ZKSYNC_RPC: "https://sepolia-rpc.scroll.io" # ci-indexer.ts читает ZKSYNC_RPC или RPC_URL
-          RPC_URL: "https://sepolia-rpc.scroll.io"
+          ZKSYNC_RPC: "https://sepolia-rpc.scroll.io"
           CHAIN_ID: "534351"
 
-          # --- фабрика(и) на Scroll ---
+          # фабрика и пр.
           FACTORY: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
           FACTORIES: '["0x25465982fD4A87054c69d874cd6D89f69e1DE35c"]'
 
-          # --- откуда сканить логи ---
-          START_BLOCK: "PUT_DEPLOY_BLOCK" # поставь блок деплоя фабрики
-          ONLY_LAST_BLOCKS: "0" # можно поставить "100000" чтобы ускорить первый прогон
+          START_BLOCK: "0"
+          ONLY_LAST_BLOCKS: "0"
           MIN_CONF: "2"
+          GATE_ADDR_HINT: "0x912bB1ed08b82f8BE19eCcCF2f271eCe28364B3A"
 
-          # --- опционально ---
-          TREASURY_SAFE: "0xABfd53eB3C6c2453bED90fa756ffE509e35eB60b"
-          GATE_ADDR: "0x912bB1eD08b82f8BE19EcCcf2F271eCe28364b3a"
-
-          # --- куда складываем артефакты перед публикацией ---
+          # куда сложить артефакты для публикации
           OUTPUT_DIR: "./out-api"
         run: npx ts-node --transpile-only backend/ci-indexer.ts
 
@@ -56,7 +58,6 @@ jobs:
           repository: D-Scope-app/dscope-api
           token: ${{ secrets.API_PUSH_TOKEN }}
           path: api-repo
-          persist-credentials: false
 
       - name: Publish API artifacts
         run: |
@@ -69,5 +70,5 @@ jobs:
             echo "No changes to publish."
           else
             git commit -m "ci(indexer): refresh artifacts"
-            git push https://x-access-token:${{ secrets.API_PUSH_TOKEN }}@github.com/D-Scope-app/dscope-api HEAD:main
+            git push
           fi
