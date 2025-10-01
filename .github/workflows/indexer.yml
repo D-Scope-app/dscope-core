@@ -14,13 +14,18 @@ concurrency:
   group: indexer
   cancel-in-progress: true
 
+permissions:
+  contents: write # нужно для пуша во второй репозиторий
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout core
+      - name: Checkout core (dscope-core)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -29,32 +34,55 @@ jobs:
 
       - name: Install deps
         run: npm ci --no-fund --no-audit
+
       - name: Compile (for ABIs)
         run: npx hardhat compile
 
       - name: Run indexer (build JSON)
         env:
-          RPC: "https://sepolia-rpc.scroll.io"
+          SCROLL_RPC: "https://sepolia-rpc.scroll.io"
           CHAIN_ID: "534351"
 
           FACTORY: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
           FACTORIES: '["0x25465982fD4A87054c69d874cd6D89f69e1DE35c"]'
 
-          ONLY_LAST_BLOCKS: "50000"
+          START_BLOCK: "12570232"
+          ONLY_LAST_BLOCKS: "0"
           MIN_CONF: "2"
+
           OUTPUT_DIR: "./out-api"
         run: npx ts-node --transpile-only backend/ci-indexer.ts
 
-      - name: Checkout dscope-api
+      - name: Quick sanity check (prevent empty publish)
+        run: |
+          set -e
+          if [ ! -f "./out-api/surveys.list.json" ]; then
+            echo "surveys.list.json not found — nothing to publish"; exit 1
+          fi
+          # если jq недоступен — установим (обычно уже есть)
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          LEN=$(jq 'length' ./out-api/surveys.list.json)
+          echo "surveys.list.json length = $LEN"
+          if [ "$LEN" = "0" ]; then
+            echo "Artifacts look empty; skip publish to avoid wipe."
+            exit 0
+          fi
+
+      - name: Checkout dscope-api (Pages repo)
+        if: ${{ always() }}
         uses: actions/checkout@v4
         with:
           repository: D-Scope-app/dscope-api
           token: ${{ secrets.API_PUSH_TOKEN }}
           path: api-repo
+          fetch-depth: 0
 
-      - name: Publish API artifacts
+      - name: Publish API artifacts (safe, no delete)
+        if: ${{ success() }}
         run: |
-          rsync -a --delete ./out-api/ ./api-repo/api/
+          rsync -a ./out-api/ ./api-repo/api/
           cd api-repo
           git config user.email "bot@dscope.app"
           git config user.name  "dscope-bot"
