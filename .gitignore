@@ -15,3 +15,70 @@ node_modules
 
 # Hardhat Ignition default folder for deployments against a local node
 ignition/deployments/chain-31337
+
+# --- Secrets & env ---
+.env
+.env.*        # .env.local, .env.dev и т.п.
+*.env
+*.pem
+*.key
+*private*key*
+*PRIVATE_KEY*
+audit_PRIVATE_KEY.txt
+
+# --- Логи и артефакты ---
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+tmp/
+.cache/
+.cache-*/
+*.tsbuildinfo
+
+# --- Node / Typechain / Hardhat (часть уже есть, дубли ок) ---
+node_modules/
+artifacts/
+artifacts-*/
+typechain/
+typechain-types/
+coverage/
+coverage.json
+cache/
+deployments/
+deployments-*/
+ignition/deployments/*
+
+# --- IDE/OS мусор ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Backend (локальные данные/хранилища) ---
+backend/.env
+backend/.env.*
+backend/*.db
+backend/storage/
+backend/logs/
+backend/tmp/
+
+# --- Attester server: держим полностью локально (не коммитим) ---
+backend/attester-server/
+attester/
+attester-server/
+server/attester/
+
+# --- Скрипты и архивы ---
+*.zip
+*.tar
+*.tar.gz
+
+# --- Если фронт держишь приватным рядом с core (укажи свою папку) ---
+landing/
+frontend/
+app/
+web/
+public/app-built/
