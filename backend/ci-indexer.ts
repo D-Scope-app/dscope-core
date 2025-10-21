@@ -17,6 +17,10 @@
  *   MIN_CONFIRMATIONS=2
  *   GATE_ADDR=0x...
  *   OUTPUT_DIR=../dscope-api/api
+ *
+ *   # новое для автопуша в воркер:
+ *   API_BASE=https://api.dscope.app
+ *   ADMIN_TOKEN=<Bearer-токен, настроенный в воркере>
  */
 
 import * as fs from "fs";
@@ -32,13 +36,21 @@ import {
   Contract,
   JsonRpcProvider, // ← стандартный провайдер ethers для Scroll
 } from "ethers";
-import * as hre from "hardhat";
+import { SURVEY_FACTORY_ABI, SURVEY_ABI } from "./abi";
+
+// Если Node < 18 — раскомментируй:
+// // @ts-ignore
+// import fetch from "node-fetch";
 
 // ---------- Load .env ----------
 const env1 = path.resolve(process.cwd(), ".env");
 const env2 = path.resolve(__dirname, "../.env");
 const envPath = fs.existsSync(env1) ? env1 : fs.existsSync(env2) ? env2 : null;
 if (envPath) dotenvConfig({ path: envPath, override: true });
+
+// ---------- Extra push-to-worker config ----------
+const API_BASE = (process.env.API_BASE || "").replace(/\/+$/, ""); // например: https://api.dscope.app
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ""; // Bearer-токен из настроек воркера
 
 // ---------- Helpers ----------
 function readJSON<T = any>(p: string, fallback: T): T {
@@ -194,6 +206,7 @@ console.log("[Indexer] Config", {
   MIN_CONF,
   GATE_ADDR_HINT,
   OUTPUT_DIR,
+  API_BASE,
 });
 if (!FACTORY && FACTORIES.length === 0)
   throw new Error(
@@ -309,14 +322,108 @@ function computeStatus(
   return "active";
 }
 
+// ---------- Push helpers (Worker Admin API) ----------
+async function httpPostJSON(
+  url: string,
+  body: any,
+  hdr: Record<string, string> = {}
+) {
+  const res = await (globalThis.fetch as any)(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...hdr,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`POST ${url} -> ${res.status} ${t}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    return {};
+  }
+}
+
+async function pushMetaToWorker(addr: string, chainId: number, meta: any) {
+  if (!API_BASE || !ADMIN_TOKEN || !meta) return;
+  await httpPostJSON(
+    `${API_BASE}/api/admin/meta.put`,
+    {
+      chainId,
+      survey: addr,
+      meta,
+    },
+    { authorization: `Bearer ${ADMIN_TOKEN}` }
+  );
+}
+
+async function pushCardToWorker(card: any) {
+  if (!API_BASE || !ADMIN_TOKEN || !card) return;
+
+  const base = API_BASE.replace(/\/+$/, "");
+  const url = /\/api$/i.test(base)
+    ? `${base}/admin/list.upsert`
+    : `${base}/api/admin/list.upsert`;
+
+  await httpPostJSON(url, card, {
+    Authorization: `Bearer ${ADMIN_TOKEN}`,
+  });
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function pushAllToWorker(
+  list: any[],
+  metaDirAbs: string,
+  chainId: number
+) {
+  if (!API_BASE || !ADMIN_TOKEN) {
+    console.log("[Push] Skipped: API_BASE/ADMIN_TOKEN not set");
+    return;
+  }
+  console.log(`[Push] Start: ${list.length} items -> ${API_BASE}`);
+
+  for (const card of list) {
+    const addr = String(card.address || "").toLowerCase();
+    const metaPath = path.join(metaDirAbs, `${addr}.json`);
+    let meta: any = null;
+    try {
+      if (fs.existsSync(metaPath))
+        meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    } catch {}
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (meta) await pushMetaToWorker(addr, chainId, meta);
+        await pushCardToWorker(card);
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const last = attempt === 3;
+        console.warn(
+          `[Push] ${addr} attempt ${attempt}/3 failed: ${msg}${
+            last ? " (giving up)" : ""
+          }`
+        );
+        if (last) break;
+        await sleep(500 * attempt);
+      }
+    }
+    await sleep(120);
+  }
+
+  console.log("[Push] Done.");
+}
+
 // ---------- Main ----------
 (async () => {
   ensureOutputs();
 
-  const FactoryArtifact = await hre.artifacts.readArtifact("SurveyFactory");
-  const SurveyArtifact = await hre.artifacts.readArtifact("Survey");
-  const iF = new Interface(FactoryArtifact.abi);
-  const iS = new Interface(SurveyArtifact.abi);
+  const iF = new Interface(SURVEY_FACTORY_ABI as any);
+  const iS = new Interface(SURVEY_ABI as any);
 
   // ↓↓↓ заменили провайдер на ethers.JsonRpcProvider (Scroll)
   const provider = new JsonRpcProvider(RPC);
@@ -399,10 +506,6 @@ function computeStatus(
             const surveyType = Number(p.args.surveyType ?? 0);
             const metaHash = String(p.args.metaHash ?? "");
             const ts = await blockTs(l.blockNumber);
-
-            // (не scroll-специфично) plannedReward/initialValue можно извлечь при наличии
-            // const plannedReward = p.args.plannedReward?.toString?.();
-            // const initialValue = p.args.initialValue?.toString?.();
 
             surveys[survey] = {
               ...(surveys[survey] || {}),
@@ -641,11 +744,8 @@ function computeStatus(
 
     if (needsStart || needsEnd) {
       try {
-        const c = new Contract(
-          sAddr,
-          (await hre.artifacts.readArtifact("Survey")).abi,
-          provider
-        );
+        const c = new Contract(sAddr, SURVEY_ABI as any, provider);
+
         let st = 0,
           en = 0;
         if (typeof c.startTime === "function")
@@ -842,6 +942,13 @@ function computeStatus(
       2
     )
   );
+
+  // ----- NEW: push artifacts to Worker KV (optional, if API_BASE/ADMIN_TOKEN set)
+  try {
+    await pushAllToWorker(list, metaDir, CHAIN_ID);
+  } catch (e: any) {
+    console.warn("[Push] Failed:", e?.message || e);
+  }
 
   console.log(`[Indexer] Done. → ${outDir}`);
   console.log(

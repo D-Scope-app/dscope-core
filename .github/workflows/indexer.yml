@@ -7,89 +7,68 @@ on:
   push:
     paths:
       - "backend/**"
-      - "deployments/**"
       - ".github/workflows/indexer.yml"
+
+# Нам не нужны расширенные права, т.к. мы больше ничего не пушим
+permissions:
+  contents: read
 
 concurrency:
   group: indexer
   cancel-in-progress: true
 
-permissions:
-  contents: write # нужно для пуша во второй репозиторий
-
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout core (dscope-core)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: "npm"
 
       - name: Install deps
         run: npm ci --no-fund --no-audit
 
-      - name: Compile (for ABIs)
-        run: npx hardhat compile
-
-      - name: Run indexer (build JSON)
+      
+      - name: Run indexer (build JSON + push to Worker)
         env:
-          SCROLL_RPC: "https://sepolia-rpc.scroll.io"
+          # ====== chain / rpc / contracts ======
+          SCROLL_RPC: ${{ secrets.SCROLL_RPC }} 
           CHAIN_ID: "534351"
 
-          FACTORY: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
-          FACTORIES: '["0x25465982fD4A87054c69d874cd6D89f69e1DE35c"]'
+          
+          FACTORY: ${{ vars.FACTORY }}
+          FACTORIES: ${{ vars.FACTORIES }} 
 
-          START_BLOCK: "12570232"
-          ONLY_LAST_BLOCKS: "0"
-          MIN_CONF: "2"
+          START_BLOCK: ${{ vars.START_BLOCK }} # можно не задавать
+          ONLY_LAST_BLOCKS: ${{ vars.ONLY_LAST_BLOCKS || '0' }}
+          MIN_CONF: ${{ vars.MIN_CONF || '2' }}
+          TREASURY_SAFE: ${{ vars.TREASURY_SAFE }}
+          GATE_ADDR: ${{ vars.GATE_ADDR }}
 
+          # куда положить локальные файлы сборки (для артефакта)
           OUTPUT_DIR: "./out-api"
-        run: npx ts-node --transpile-only backend/ci-indexer.ts
 
-      - name: Quick sanity check (prevent empty publish)
+          # ====== публикация в Cloudflare Worker ======
+          API_BASE: ${{ secrets.API_BASE }} # ДОЛЖНО быть: https://api.dscope.app   (без /api)
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }} # тот же токен, что в Settings воркера
+        run: npx tsx backend/ci-indexer.ts
+
+      - name: Sanity check output (optional)
         run: |
-          set -e
-          if [ ! -f "./out-api/surveys.list.json" ]; then
-            echo "surveys.list.json not found — nothing to publish"; exit 1
-          fi
-          # если jq недоступен — установим (обычно уже есть)
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y jq
-          fi
-          LEN=$(jq 'length' ./out-api/surveys.list.json)
-          echo "surveys.list.json length = $LEN"
-          if [ "$LEN" = "0" ]; then
-            echo "Artifacts look empty; skip publish to avoid wipe."
-            exit 0
-          fi
+          test -f ./out-api/surveys.list.json
+          jq 'length' ./out-api/surveys.list.json
 
-      - name: Checkout dscope-api (Pages repo)
-        if: ${{ always() }}
-        uses: actions/checkout@v4
+      # не обязательно, но удобно видеть, что именно собралось
+      - name: Upload artifacts (optional)
+        uses: actions/upload-artifact@v4
         with:
-          repository: D-Scope-app/dscope-api
-          token: ${{ secrets.API_PUSH_TOKEN }}
-          path: api-repo
-          fetch-depth: 0
-
-      - name: Publish API artifacts (safe, no delete)
-        if: ${{ success() }}
-        run: |
-          rsync -a ./out-api/ ./api-repo/api/
-          cd api-repo
-          git config user.email "bot@dscope.app"
-          git config user.name  "dscope-bot"
-          git add api
-          if git diff --cached --quiet; then
-            echo "No changes to publish."
-          else
-            git commit -m "ci(indexer): refresh artifacts"
-            git push
-          fi
+          name: out-api
+          path: ./out-api
