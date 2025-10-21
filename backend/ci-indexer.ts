@@ -141,11 +141,9 @@ function normalizePredicates(raw: any): Predicate[] {
 // ---------- Config (обновлено под Scroll) ----------
 const CHAIN_ID = Number(process.env.CHAIN_ID || 534351); // ← Scroll Sepolia
 const RPC =
-  process.env.SCROLL_RPC || // ← приоритетный ключ для Scroll
+  process.env.SCROLL_RPC ||
   process.env.RPC_URL ||
-  process.env.ZKSYNC_RPC || // ← старый ключ как fallback
-  ((hre.network?.config as any)?.url as string | undefined) ||
-  "https://sepolia-rpc.scroll.io"; // ← дефолт для Scroll Sepolia
+  "https://sepolia-rpc.scroll.io";
 
 let FACTORY: string = (process.env.FACTORY_ADDRESS || process.env.FACTORY || "")
   .toLowerCase()
