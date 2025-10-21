@@ -36,16 +36,15 @@ jobs:
       - name: Install deps
         run: npm ci --no-fund --no-audit
 
-      
       - name: Run indexer (build JSON + push to Worker)
         env:
           # ====== chain / rpc / contracts ======
-          SCROLL_RPC: ${{ secrets.SCROLL_RPC }} 
+          FACTORY_ADDRESS: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
+          SCROLL_RPC: ${{ secrets.SCROLL_RPC }}
           CHAIN_ID: "534351"
 
-          
           FACTORY: ${{ vars.FACTORY }}
-          FACTORIES: ${{ vars.FACTORIES }} 
+          FACTORIES: ${{ vars.FACTORIES }}
 
           START_BLOCK: ${{ vars.START_BLOCK }} # можно не задавать
           ONLY_LAST_BLOCKS: ${{ vars.ONLY_LAST_BLOCKS || '0' }}
