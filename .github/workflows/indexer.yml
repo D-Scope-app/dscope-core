@@ -1,3 +1,4 @@
+# .github/workflows/indexer.yml
 name: indexer
 
 on:
@@ -9,7 +10,6 @@ on:
       - "backend/**"
       - ".github/workflows/indexer.yml"
 
-# Нам не нужны расширенные права, т.к. мы больше ничего не пушим
 permissions:
   contents: read
 
@@ -38,35 +38,31 @@ jobs:
 
       - name: Run indexer (build JSON + push to Worker)
         env:
-          # ====== chain / rpc / contracts ======
-          FACTORY_ADDRESS: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
-          SCROLL_RPC: ${{ secrets.SCROLL_RPC }}
+          # Chain & RPC
           CHAIN_ID: "534351"
+          SCROLL_RPC: ${{ secrets.SCROLL_RPC }}
 
-          FACTORY: ${{ vars.FACTORY }}
-          FACTORIES: ${{ vars.FACTORIES }}
+          # Contract address (единственный источник истины)
+          FACTORY_ADDRESS: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
 
-          START_BLOCK: ${{ vars.START_BLOCK }} # можно не задавать
-          ONLY_LAST_BLOCKS: ${{ vars.ONLY_LAST_BLOCKS || '0' }}
-          MIN_CONF: ${{ vars.MIN_CONF || '2' }}
-          TREASURY_SAFE: ${{ vars.TREASURY_SAFE }}
-          GATE_ADDR: ${{ vars.GATE_ADDR }}
+          # Опционально: START_BLOCK можно задать вручную или убрать
+          START_BLOCK: "12570232"
 
-          # куда положить локальные файлы сборки (для артефакта)
+          # Cloudflare Worker API (без /api на конце!)
+          API_BASE: ${{ secrets.API_BASE }} # ← должно быть: https://api.dscope.app
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }} # ← тот же токен, что в Worker Settings
+
+          # Output dir для артефактов (локально в CI)
           OUTPUT_DIR: "./out-api"
 
-          # ====== публикация в Cloudflare Worker ======
-          API_BASE: ${{ secrets.API_BASE }} # ДОЛЖНО быть: https://api.dscope.app   (без /api)
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }} # тот же токен, что в Settings воркера
         run: npx tsx backend/ci-indexer.ts
 
-      - name: Sanity check output (optional)
+      - name: Sanity check output
         run: |
           test -f ./out-api/surveys.list.json
           jq 'length' ./out-api/surveys.list.json
 
-      # не обязательно, но удобно видеть, что именно собралось
-      - name: Upload artifacts (optional)
+      - name: Upload artifacts (optional, for debugging)
         uses: actions/upload-artifact@v4
         with:
           name: out-api
