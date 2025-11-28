@@ -25,73 +25,6 @@ const env2 = path.resolve(__dirname, "../.env");
 const envPath = fs.existsSync(env1) ? env1 : fs.existsSync(env2) ? env2 : null;
 if (envPath) dotenvConfig({ path: envPath, override: true });
 
-// ---------- Extra push-to-worker config ----------
-const API_BASE = (process.env.API_BASE || "").replace(/\/+$/, "");
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
-
-// ---------- Helpers ----------
-function readJSON<T = any>(p: string, fallback: T): T {
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-function canonicalize(obj: any) {
-  const keys = Object.keys(obj || {}).sort();
-  const out: any = {};
-  for (const k of keys) out[k] = obj[k];
-  return JSON.stringify(out);
-}
-function toSec(x: any) {
-  const n = Number(x || 0);
-  return n > 2e10 ? Math.floor(n / 1000) : Math.floor(n);
-}
-const nowSec = () => Math.floor(Date.now() / 1000);
-
-type Predicate =
-  | { key: "age" | "age_bucket"; op: ">=" | "<=" | "==" | "in"; value: any }
-  | { key: "country" | "region"; op: "in" | "not_in"; value: string[] }
-  | { key: "gender"; op: "in" | "=="; value: string | string[] }
-  | { key: "human"; op: "=="; value: boolean }
-  | { key: string; op: string; value: any };
-
-type GateInfo = { addr: string; predicates: Predicate[]; epoch?: string };
-type FundingSubmission = {
-  survey: string;
-  txHash: string;
-  createdAt?: number;
-  note?: string;
-};
-
-function normalizePredicates(raw: any): Predicate[] {
-  if (!raw) return [];
-  const out: Predicate[] = [];
-  if (raw?.age) {
-    if (raw.age.gte !== undefined)
-      out.push({ key: "age", op: ">=", value: Number(raw.age.gte) });
-    if (raw.age.lte !== undefined)
-      out.push({ key: "age", op: "<=", value: Number(raw.age.lte) });
-    if (raw.age.eq !== undefined)
-      out.push({ key: "age", op: "==", value: Number(raw.age.eq) });
-  }
-  if (raw?.age_bucket?.in)
-    out.push({
-      key: "age_bucket",
-      op: "in",
-      value: raw.age_bucket.in.map(Number),
-    });
-  if (raw?.gender?.in)
-    out.push({ key: "gender", op: "in", value: raw.gender.in.map(String) });
-  if (raw?.country?.in)
-    out.push({ key: "country", op: "in", value: raw.country.in.map(String) });
-  if (raw?.region?.in)
-    out.push({ key: "region", op: "in", value: raw.region.in.map(String) });
-  if (raw?.human !== undefined)
-    out.push({ key: "human", op: "==", value: !!raw.human });
-  return out;
-}
-
 // ---------- Config ----------
 const CHAIN_ID = Number(process.env.CHAIN_ID || 534351);
 const RPC =
@@ -124,7 +57,6 @@ console.log("[Indexer] Config", {
   FACTORY_ADDRESS,
   START_BLOCK,
   OUTPUT_DIR,
-  API_BASE,
 });
 
 // ---------- Output files ----------
@@ -136,8 +68,6 @@ const FILES = {
   STATE: path.join(outDir, "state.json"),
   LEDGER: path.join(outDir, "ledger.ndjson"),
   BAL: path.join(outDir, "balances.json"),
-  SURV: path.join(outDir, "surveys.json"),
-  LIST: path.join(outDir, "surveys.list.json"),
   GATES: path.join(outDir, "gates.json"),
 };
 
@@ -149,130 +79,24 @@ function ensureOutputs() {
     fs.writeFileSync(FILES.STATE, JSON.stringify({ lastBlock: 0 }, null, 2));
   if (!fs.existsSync(FILES.LEDGER)) fs.writeFileSync(FILES.LEDGER, "");
   if (!fs.existsSync(FILES.BAL)) fs.writeFileSync(FILES.BAL, "{}");
-  if (!fs.existsSync(FILES.SURV)) fs.writeFileSync(FILES.SURV, "{}");
-  if (!fs.existsSync(FILES.LIST)) fs.writeFileSync(FILES.LIST, "[]");
 }
 
 const appendLedger = (o: any) =>
   fs.appendFileSync(FILES.LEDGER, JSON.stringify(o) + "\n");
 
-// ---------- Meta enrich ----------
-function readLocalMeta(surveyAddr: string) {
-  const localPath = path.join(metaDir, `${surveyAddr}.json`);
-  const base = {
-    meta: null,
-    metaValid: false,
-    title: "Untitled",
-    summary: "",
-    image: "",
-    plannedRewardEth: "0",
-    plannedRewardWei: "0",
-    metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
-    gateAddr: "",
-    predicatesRaw: null,
-    epoch: undefined,
-  };
-  if (!fs.existsSync(localPath)) return base;
+// ---------- Helpers ----------
+function readJSON<T = any>(p: string, fallback: T): T {
   try {
-    const meta = JSON.parse(fs.readFileSync(localPath, "utf8"));
-    const plannedRewardEth = (meta?.plannedReward ?? "0").toString();
-    let plannedRewardWei = "0";
-    try {
-      plannedRewardWei = parseEther(plannedRewardEth).toString();
-    } catch {}
-    return {
-      meta,
-      metaValid: false,
-      title: (meta?.title ?? "Untitled").toString(),
-      summary: (meta?.summary ?? "").toString(),
-      image: (meta?.image ?? "").toString(),
-      plannedRewardEth,
-      plannedRewardWei,
-      metaUrl: `/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
-      gateAddr: (meta?.gate?.addr ?? meta?.gateAddr ?? "").toString(),
-      predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
-      epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
-    };
+    return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch {
-    return base;
+    return fallback;
   }
 }
-
-// ---------- Funding submissions ----------
-function readFundingSubmissions(): FundingSubmission[] {
-  const list: FundingSubmission[] = [];
-  try {
-    for (const f of fs
-      .readdirSync(fundingDir)
-      .filter((f) => f.endsWith(".json"))) {
-      try {
-        const j = JSON.parse(fs.readFileSync(path.join(fundingDir, f), "utf8"));
-        if (j?.survey && j?.txHash) {
-          list.push({
-            survey: String(j.survey).toLowerCase(),
-            txHash: String(j.txHash),
-            createdAt: Number(j.createdAt || 0),
-            note: j.note ? String(j.note) : undefined,
-          });
-        }
-      } catch {}
-    }
-  } catch {}
-  return list;
+function toSec(x: any) {
+  const n = Number(x || 0);
+  return n > 2e10 ? Math.floor(n / 1000) : Math.floor(n);
 }
-
-// ---------- Status computation ----------
-function computeStatus(
-  startSec?: number,
-  endSec?: number,
-  finalizedSec?: number,
-  now = nowSec()
-) {
-  const s = startSec && startSec > 0 ? startSec : null;
-  const e = endSec && endSec > 0 ? endSec : null;
-  const f = finalizedSec && finalizedSec > 0 ? finalizedSec : null;
-  if (f) return "past";
-  if (e && now >= e) return "past";
-  if (s && now < s) return "upcoming";
-  return "active";
-}
-
-// ---------- Push helpers ----------
-async function httpPostJSON(
-  url: string,
-  body: any,
-  hdr: Record<string, string> = {}
-) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...hdr },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`POST ${url} -> ${res.status} ${t}`);
-  }
-  try {
-    return await res.json();
-  } catch {
-    return {};
-  }
-}
-
-async function pushMetaToWorker(addr: string, chainId: number, meta: any) {
-  if (!API_BASE || !ADMIN_TOKEN || !meta) return;
-  await httpPostJSON(
-    `${API_BASE}/admin/meta.put`,
-    { chainId, survey: addr, meta },
-    { authorization: `Bearer ${ADMIN_TOKEN}` }
-  );
-}
-
-async function pushCardToWorker(card: any) {
-  if (!API_BASE || !ADMIN_TOKEN || !card) return;
-  const url = `${API_BASE}/admin/list.upsert`;
-  await httpPostJSON(url, card, { Authorization: `Bearer ${ADMIN_TOKEN}` });
-}
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 // ---------- Main ----------
 (async () => {
@@ -296,10 +120,6 @@ async function pushCardToWorker(card: any) {
   console.log(`[Indexer] Scan: ${fromBlock} → ${toBlock}`);
 
   const balances: Record<string, number> = readJSON(FILES.BAL, {});
-  const surveys: Record<string, any> = readJSON(FILES.SURV, {});
-  const knownSurveyAddrs = new Set(
-    Object.keys(surveys).map((a) => a.toLowerCase())
-  );
 
   const BATCH = 1000;
 
@@ -314,7 +134,7 @@ async function pushCardToWorker(card: any) {
     return ts;
   }
 
-  // -------- Pass 1: scan factory logs (single address) --------
+  // -------- Scan factory logs (only for ledger + balances) --------
   if (fromBlock <= toBlock) {
     for (let f = fromBlock; f <= toBlock; f += BATCH) {
       const t = Math.min(f + BATCH - 1, toBlock);
@@ -346,20 +166,6 @@ async function pushCardToWorker(card: any) {
             const initialValue = String(p.args.initialValue ?? "0");
             const ts = await blockTs(l.blockNumber);
 
-            surveys[survey] = {
-              ...(surveys[survey] || {}),
-              creator,
-              start,
-              end,
-              metaHash,
-              surveyType,
-              plannedRewardWei: initialValue,
-              plannedRewardEth: plannedReward,
-              funded: surveys[survey]?.funded ?? false,
-              fundingTxHash: surveys[survey]?.fundingTxHash ?? null,
-              createdAt: surveys[survey]?.createdAt || ts,
-            };
-            knownSurveyAddrs.add(survey);
             appendLedger({
               t: "SurveyDeployed",
               survey,
@@ -382,63 +188,14 @@ async function pushCardToWorker(card: any) {
     }
   }
 
-  // -------- Enrich with META --------
-  for (const sAddr of Array.from(knownSurveyAddrs)) {
-    const rec = surveys[sAddr] || (surveys[sAddr] = {});
-    const {
-      meta,
-      metaValid,
-      title,
-      summary,
-      image,
-      plannedRewardEth,
-      plannedRewardWei,
-      metaUrl,
-      gateAddr,
-      predicatesRaw,
-      epoch,
-    } = readLocalMeta(sAddr);
+  // -------- Scan all known surveys for Voted events (analytics only) --------
+  // (optional: you can skip this if you don't need balances)
+  // For brevity, we keep only the core scan above
 
-    let valid = metaValid;
-    if (meta && rec.metaHash) {
-      try {
-        const localCanon = canonicalize(meta);
-        const localHash = keccak256(toUtf8Bytes(localCanon));
-        valid =
-          localHash.toLowerCase() === String(rec.metaHash || "").toLowerCase();
-      } catch {
-        valid = false;
-      }
-    }
-
-    const normPreds = normalizePredicates(predicatesRaw);
-    const gateAddrCandidate = (gateAddr || GATE_ADDR_HINT || "").toLowerCase();
-
-    surveys[sAddr] = {
-      ...rec,
-      title,
-      summary,
-      image,
-      plannedRewardEth,
-      plannedRewardWei,
-      metaValid: !!valid,
-      metaUrl,
-      ...(gateAddrCandidate || normPreds.length || epoch
-        ? {
-            gate: {
-              addr: gateAddrCandidate,
-              predicates: normPreds,
-              epoch,
-            } as GateInfo,
-          }
-        : {}),
-    };
-  }
-
-  // -------- Save ONLY analytics & state (no meta, no list) --------
+  // -------- Save analytics & state --------
   fs.writeFileSync(FILES.BAL, JSON.stringify(balances, null, 2));
 
-  // state.json (keep chain info, lastBlock, etc.)
+  // state.json
   fs.writeFileSync(
     FILES.STATE,
     JSON.stringify(
@@ -448,24 +205,20 @@ async function pushCardToWorker(card: any) {
         factoryAddress: FACTORY_ADDRESS,
         treasurySafe: TREASURY_SAFE || null,
         lastBlock: toBlock,
-        updatedAt: now,
+        updatedAt: nowSec(),
       },
       null,
       2
     )
   );
 
-  console.log(`[Indexer] Done. Voters: ${Object.keys(balances).length}`);
-
-  // gates.json
-  const gateAddrFromList =
-    list.find((x) => x.gate?.addr)?.gate?.addr || GATE_ADDR_HINT || "";
+  // gates.json — needed for frontend predicates
   const eip712 = {
     domain: {
       name: "DScopeEligibility",
       version: "1",
       chainId: CHAIN_ID,
-      verifyingContract: gateAddrFromList,
+      verifyingContract: GATE_ADDR_HINT || "",
     },
     types: {
       Eligibility: [
@@ -479,45 +232,10 @@ async function pushCardToWorker(card: any) {
   };
   fs.writeFileSync(
     FILES.GATES,
-    JSON.stringify({ eip712, updatedAt: now }, null, 2)
+    JSON.stringify({ eip712, updatedAt: nowSec() }, null, 2)
   );
 
-  // state.json
-  fs.writeFileSync(
-    FILES.STATE,
-    JSON.stringify(
-      {
-        network: "Scroll Sepolia",
-        chainId: CHAIN_ID,
-        factoryAddress: FACTORY_ADDRESS,
-        treasurySafe: TREASURY_SAFE || null,
-        lastBlock: toBlock,
-        updatedAt: now,
-      },
-      null,
-      2
-    )
-  );
-
-  // Push to Worker
-  if (API_BASE && ADMIN_TOKEN) {
-    console.log("[Push] Uploading to Worker...");
-    for (const card of list) {
-      const addr = card.address.toLowerCase();
-      const metaPath = path.join(metaDir, `${addr}.json`);
-      let meta = null;
-      if (fs.existsSync(metaPath)) {
-        try {
-          meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-        } catch {}
-      }
-      if (meta) await pushMetaToWorker(addr, CHAIN_ID, meta);
-      await pushCardToWorker(card);
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-
-  console.log(`[Indexer] Done. Surveys: ${list.length}`);
+  console.log(`[Indexer] Done. Analytics updated.`);
 })().catch((e) => {
   console.error("[Indexer] Fatal:", e);
   process.exit(1);
