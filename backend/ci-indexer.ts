@@ -435,53 +435,27 @@ async function pushCardToWorker(card: any) {
     };
   }
 
-  // -------- Save artifacts --------
+  // -------- Save ONLY analytics & state (no meta, no list) --------
   fs.writeFileSync(FILES.BAL, JSON.stringify(balances, null, 2));
-  fs.writeFileSync(FILES.SURV, JSON.stringify(surveys, null, 2));
 
-  const now = nowSec();
-  const list = Object.entries(surveys).map(([address, s]) => {
-    const createdSec = s.createdAt ? toSec(s.createdAt) : 0;
-    const startSec = s.start ? toSec(s.start) : 0;
-    const endSec = s.end ? toSec(s.end) : 0;
-    const finalizedSec = s.finalizedAt ? toSec(s.finalizedAt) : 0;
-    const status = computeStatus(startSec, endSec, finalizedSec, now);
+  // state.json (keep chain info, lastBlock, etc.)
+  fs.writeFileSync(
+    FILES.STATE,
+    JSON.stringify(
+      {
+        network: "Scroll Sepolia",
+        chainId: CHAIN_ID,
+        factoryAddress: FACTORY_ADDRESS,
+        treasurySafe: TREASURY_SAFE || null,
+        lastBlock: toBlock,
+        updatedAt: now,
+      },
+      null,
+      2
+    )
+  );
 
-    return {
-      address: address.toLowerCase(),
-      creator: (s.creator || "").toLowerCase(),
-      startTime: startSec,
-      endTime: endSec,
-      createdSec,
-      startSec,
-      endSec,
-      finalizedSec,
-      status,
-      metaHash: s.metaHash || "",
-      surveyType: s.surveyType ?? 0,
-      title: s.title ?? "Untitled",
-      summary: s.summary ?? "",
-      image: s.image ?? "",
-      plannedRewardEth: s.plannedRewardEth ?? "0",
-      plannedRewardWei: s.plannedRewardWei ?? "0",
-      metaValid: !!s.metaValid,
-      metaUrl: s.metaUrl,
-      prizeFunded: s.prizeFunded || "0",
-      prizeSwept: s.prizeSwept || "0",
-      prizeLiveBalance: s.prizeLiveBalance || undefined,
-      funded: s.funded ?? false,
-      fundingTxHash: s.fundingTxHash ?? null,
-      gate: s.gate
-        ? {
-            addr: (s.gate.addr || "").toLowerCase(),
-            predicates: s.gate.predicates || [],
-            epoch: s.gate.epoch ?? undefined,
-          }
-        : undefined,
-      chainId: CHAIN_ID,
-    };
-  });
-  fs.writeFileSync(FILES.LIST, JSON.stringify(list, null, 2));
+  console.log(`[Indexer] Done. Voters: ${Object.keys(balances).length}`);
 
   // gates.json
   const gateAddrFromList =

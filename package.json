@@ -21,7 +21,8 @@
     "ethers": "^6.15.0",
     "hardhat": "^2.26.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.43.0"
   },
   "description": "",
   "main": "index.js",

@@ -3,19 +3,19 @@
 
 /**
  * Лёгкий HTTP-сервис:
- * - POST /api/zkpass/submit       — принять результат TransGate, посчитать агрегаты, обновить analytics JSON, отдать "ok"
- * - POST /api/eligibility/sign    — подписать EIP-712 Eligibility(user,survey,nullifier,deadline,chainId)
- * - GET  /api/analytics/:survey   — отдать analytics JSON (для локального теста; в проде берётся из Pages)
- * - GET  /api/gates.json          — дать фронту домен/типы EIP-712 и справочные zkPass-константы
- * - SSE  /api/stream/:survey      — (опционально) лайв-стрим апдейтов для дашборда
+ * - POST /api/zkpass/submit        — принять результат TransGate, посчитать агрегаты (merge по nullifier), обновить analytics JSON, отдать "ok"
+ * - POST /api/eligibility/sign     — подписать EIP-712 Eligibility(user,survey,nullifier,deadline,chainId)
+ * - GET  /api/analytics/:survey(.json) — отдать analytics JSON
+ * - GET  /api/gates.json           — дать фронту домен/типы EIP-712 и справочные zkPass-константы (+ k_anonymity)
+ * - SSE  /api/stream/:survey       — лайв-стрим дельт для дашборда
  *
- * Хранение состояния:
- * - OUTPUT_DIR/analytics/<survey>.json         — аггрегированный срез для дашборда
- * - OUTPUT_DIR/seen/<survey>.json              — список nullifier'ов (для дедупликации)
+ * Хранение состояния (без PII):
+ * - OUTPUT_DIR/analytics/<survey>.json   — агрегированный срез (только: ageBuckets, region, kycOk, totals)
+ * - OUTPUT_DIR/people/<survey>.json      — «псевдо-персоны» (по nullifier) для мерджа шагов (без dob/countryCode)
  *
- * Безопасность/PII:
- * - PII не сохраняем: dob, countryCode и пр. — не пишутся на диск.
- * - Только агрегаты: age_bucket (свод в 5 корзин), region, kyc_ok.
+ * Политика PII:
+ * - DOB / countryCode и любые первичные значения НЕ сохраняются.
+ * - Только производные агрегаты: age_bucket, region, kyc_ok (и nullifier для мерджа).
  */
 
 import "dotenv/config";
@@ -26,7 +26,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { ethers, TypedDataDomain, TypedDataField } from "ethers";
 
-// ---- ENV
+// ===== ENV / CONFIG =====
 const PORT = Number(process.env.PORT || 8787);
 const OUTPUT_DIR = path.resolve(
   process.cwd(),
@@ -40,18 +40,24 @@ const K_ANONYMITY = Number(process.env.K_ANONYMITY || 5);
 const ZKCONF = {
   appId: process.env.ZKPASS_APP_ID || "",
   schemas: {
-    binanceDob: process.env.ZKPASS_SCHEMA_BINANCE_DOB || "",
-    kucoinCountry: process.env.ZKPASS_SCHEMA_KUCOIN_REGION || "",
-    kucoinKyc: process.env.ZKPASS_SCHEMA_KUCOIN_KYC || "",
+    binanceDob:
+      process.env.ZKPASS_SCHEMA_BINANCE_DOB ||
+      "b6fd16b78d9f4eba93bc458c2bb05ae9",
+    kucoinCountry:
+      process.env.ZKPASS_SCHEMA_KUCOIN_REGION ||
+      "65f20da81c7142459828d672c83daaa2",
+    kucoinKyc:
+      process.env.ZKPASS_SCHEMA_KUCOIN_KYC ||
+      "848605696f0e45f9a4d9b9896e8d4269",
   },
 };
 
-// ---- FS helpers
+// ===== FS helpers & dirs =====
 const anaDir = path.join(OUTPUT_DIR, "analytics");
-const seenDir = path.join(OUTPUT_DIR, "seen");
+const pplDir = path.join(OUTPUT_DIR, "people");
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!fs.existsSync(anaDir)) fs.mkdirSync(anaDir, { recursive: true });
-if (!fs.existsSync(seenDir)) fs.mkdirSync(seenDir, { recursive: true });
+if (!fs.existsSync(pplDir)) fs.mkdirSync(pplDir, { recursive: true });
 
 function readJSON<T = any>(p: string, fallback: T): T {
   try {
@@ -66,7 +72,33 @@ function writeJSON(p: string, obj: any) {
 }
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+// ===== Types =====
 type AgeBucketKey = "18-25" | "26-30" | "31-40" | "41-50" | "51+";
+type Person = {
+  nullifier: string; // bytes32 (hex, lowercased)
+  ageBucket?: AgeBucketKey;
+  region?: string; // Europe / Asia / Americas / Africa / Oceania / Other / Unknown
+  country?: string; // ISO-2 (опционально, для геоточек/таблицы)
+  kycOk?: boolean;
+};
+type Row = {
+  region: string;
+  country?: string;
+  count: number;
+  kycOk: number;
+  ageBuckets: Partial<Record<AgeBucketKey, number>>;
+  lat?: number;
+  lng?: number;
+};
+type Analytics = {
+  updatedAt: number;
+  total: number;
+  eligible: number;
+  kycOk: number;
+  rows: Row[];
+};
+
+// ===== Bucket calc =====
 function dobToAgeBucketKey(dobISO: string | undefined): AgeBucketKey | null {
   if (!dobISO || dobISO.length < 10) return null;
   const y = Number(dobISO.slice(0, 4));
@@ -85,6 +117,7 @@ function dobToAgeBucketKey(dobISO: string | undefined): AgeBucketKey | null {
   return "51+";
 }
 
+// ===== Region map (countryCode → region) =====
 const COUNTRY_REGION: Record<string, string> = (() => {
   const EEA = new Set([
     "AT",
@@ -202,7 +235,6 @@ const COUNTRY_REGION: Record<string, string> = (() => {
           "ZM",
           "ZW",
           "MZ",
-          "DZ",
         ]);
         const oce = new Set(["AU", "NZ", "FJ", "PG"]);
         if (americas.has(cc)) return "Americas";
@@ -215,7 +247,7 @@ const COUNTRY_REGION: Record<string, string> = (() => {
   ) as any;
 })();
 
-// ---- In-memory SSE subscribers
+// ===== SSE =====
 const sseSubs: Map<string /*survey*/, Set<express.Response>> = new Map();
 function sseBroadcast(survey: string, payload: any) {
   const set = sseSubs.get(survey.toLowerCase());
@@ -228,86 +260,59 @@ function sseBroadcast(survey: string, payload: any) {
   }
 }
 
-type Row = {
-  region: string;
-  country?: string;
-  count: number;
-  kycOk: number;
-  ageBuckets: Partial<Record<AgeBucketKey, number>>;
-  lat?: number;
-  lng?: number;
-};
-type Analytics = {
-  updatedAt: number;
-  total: number;
-  eligible: number;
-  kycOk: number;
-  rows: Row[];
-};
-
+// ===== Analytics helpers =====
 function emptyAnalytics(): Analytics {
   return { updatedAt: nowSec(), total: 0, eligible: 0, kycOk: 0, rows: [] };
 }
+const pplPath = (s: string) => path.join(pplDir, `${s.toLowerCase()}.json`);
+const anaPath = (s: string) => path.join(anaDir, `${s.toLowerCase()}.json`);
+const loadPeople = (s: string) => readJSON<Person[]>(pplPath(s), []);
+const savePeople = (s: string, arr: Person[]) => writeJSON(pplPath(s), arr);
 
-function hasSeenNullifier(survey: string, h: string): boolean {
-  const p = path.join(seenDir, `${survey.toLowerCase()}.json`);
-  const arr: string[] = readJSON(p, []);
-  return arr.includes(h.toLowerCase());
-}
-function markNullifier(survey: string, h: string) {
-  const p = path.join(seenDir, `${survey.toLowerCase()}.json`);
-  const arr: string[] = readJSON(p, []);
-  if (!arr.includes(h.toLowerCase())) {
-    arr.push(h.toLowerCase());
-    writeJSON(p, arr);
-  }
-}
-
-function upsertAnalytics(
+function applyAggDeltas(
   survey: string,
   region: string,
-  countryCode: string | null,
-  ageKey: AgeBucketKey | null,
-  passedKyc: boolean
+  country: string,
+  countDelta: number,
+  kycDelta: number,
+  ageDelta: Partial<Record<AgeBucketKey, number>>
 ) {
-  const f = path.join(anaDir, `${survey.toLowerCase()}.json`);
+  const f = anaPath(survey);
   const A: Analytics = readJSON(f, emptyAnalytics());
 
-  const key = (region || "Unknown") + "|" + (countryCode || "");
-  let row = A.rows.find((r) => r.region + "|" + (r.country || "") === key);
+  const key = (region || "Unknown") + "|" + (country || "");
+  let row = A.rows.find(
+    (r) => (r.region || "Unknown") + "|" + (r.country || "") === key
+  );
   if (!row) {
     row = {
       region: region || "Unknown",
-      country: countryCode || "",
+      country: country || "",
       count: 0,
       kycOk: 0,
       ageBuckets: {},
     };
     A.rows.push(row);
   }
-  row.count += 1;
-  if (passedKyc) row.kycOk += 1;
-  if (ageKey) row.ageBuckets[ageKey] = (row.ageBuckets[ageKey] || 0) + 1;
 
+  if (countDelta) row.count += countDelta;
+  if (kycDelta) row.kycOk += kycDelta;
+  for (const k of Object.keys(ageDelta || {}) as AgeBucketKey[]) {
+    const v = Number(ageDelta[k] || 0);
+    if (v) row.ageBuckets[k] = (row.ageBuckets[k] || 0) + v;
+  }
+
+  // totals
   A.total = A.rows.reduce((a, r) => a + r.count, 0);
   A.kycOk = A.rows.reduce((a, r) => a + r.kycOk, 0);
-  A.eligible = A.total;
+  A.eligible = A.total; // всё, что заингестили, считаем eligible
   A.updatedAt = nowSec();
 
   writeJSON(f, A);
-
-  sseBroadcast(survey, {
-    type: "append",
-    row: {
-      region: row.region,
-      country: row.country,
-      count: 1,
-      kycOk: passedKyc ? 1 : 0,
-      ageBuckets: ageKey ? { [ageKey]: 1 } : {},
-    },
-  });
+  return A;
 }
 
+// ===== EIP-712 =====
 const EIP712_DOMAIN: TypedDataDomain = {
   name: "DScopeEligibility",
   version: "1",
@@ -323,7 +328,6 @@ const EIP712_TYPES: Record<string, TypedDataField[]> = {
     { name: "chainId", type: "uint256" },
   ],
 };
-
 function requireEnvReady() {
   if (!ATTESTER_PRIVKEY || ATTESTER_PRIVKEY.length < 64) {
     throw new Error("ATTESTER_PRIVKEY not set");
@@ -341,7 +345,7 @@ const signer = (() => {
   }
 })();
 
-// ---- Server
+// ===== Server =====
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "1mb" }));
@@ -349,37 +353,38 @@ app.use(bodyParser.json({ limit: "1mb" }));
 // Health
 app.get("/healthz", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// ---- ZKPass ingest (merge by nullifier; deltas only) ----
 app.post("/api/zkpass/submit", (req, res) => {
   try {
     const survey = String(req.body?.survey || "").toLowerCase();
     const schemaId = String(req.body?.schemaId || "");
     const data = req.body?.data || {};
-    const field = data?.fieldAssets || data?.data?.fieldAssets || {};
+    const field = data?.fieldAssets || data?.data?.fieldAssets || {}; // поддержка обеих форм
     const nullifier = (
       data?.nullifierHash ||
       data?.data?.nullifierHash ||
       ""
     ).toLowerCase();
 
-    if (!ethers.isAddress(survey))
+    if (!ethers.isAddress(survey)) {
       return res.status(400).json({ error: "bad survey" });
-    if (!nullifier || !/^0x[0-9a-f]{64}$/.test(nullifier))
+    }
+    if (!/^0x[0-9a-f]{64}$/.test(nullifier)) {
       return res.status(400).json({ error: "bad nullifier" });
-
-    if (hasSeenNullifier(survey, nullifier)) {
-      return res.json({ ok: true, deduped: true });
     }
 
-    let ageKey: AgeBucketKey | null = null;
-    let region: string | null = null;
-    let countryCode: string | null = null;
-    let kyc_ok = false;
+    // --- derive aggregates from this proof step ---
+    let derivedAge: AgeBucketKey | null = null;
+    let derivedRegion: string | null = null;
+    let derivedCountry: string | null = null;
+    let derivedKyc = false;
 
     if (schemaId === ZKCONF.schemas.binanceDob) {
       const dob = String(
         field["data|birthday"] ?? field["birthday"] ?? field["dob"] ?? ""
       );
-      ageKey = dobToAgeBucketKey(dob);
+      // Никаких сохранений dob — только корзина!
+      derivedAge = dobToAgeBucketKey(dob);
     }
 
     if (schemaId === ZKCONF.schemas.kucoinCountry) {
@@ -387,42 +392,126 @@ app.post("/api/zkpass/submit", (req, res) => {
         field["data|countryCode"] ?? field["countryCode"] ?? ""
       ).toUpperCase();
       if (cc) {
-        countryCode = cc;
-        region = COUNTRY_REGION[cc];
+        derivedCountry = cc;
+        derivedRegion = COUNTRY_REGION[cc] || "Other";
       }
     }
 
-    // KuCoin KYC preset
     if (schemaId === ZKCONF.schemas.kucoinKyc) {
-      kyc_ok = true;
+      derivedKyc = true;
     }
 
-    if (!ageKey && !region && !kyc_ok) {
-      return res.status(400).json({ error: "no aggregates derived" });
+    // --- load/update person (merge) ---
+    const people = loadPeople(survey);
+    let person = people.find((p) => p.nullifier === nullifier);
+    const firstTime = !person;
+    if (!person) person = { nullifier };
+
+    // Какие дельты реально применились?
+    let countDelta = 0;
+    let kycDelta = 0;
+    const ageDelta: Partial<Record<AgeBucketKey, number>> = {};
+
+    if (firstTime) {
+      countDelta = 1;
     }
 
-    markNullifier(survey, nullifier);
+    // age
+    if (derivedAge && person.ageBucket !== derivedAge) {
+      person.ageBucket = derivedAge;
+      ageDelta[derivedAge] = 1;
+    }
 
-    upsertAnalytics(
+    // region/country
+    if (derivedRegion && person.region !== derivedRegion) {
+      person.region = derivedRegion;
+    }
+    if (derivedCountry && person.country !== derivedCountry) {
+      person.country = derivedCountry;
+    }
+
+    // kyc
+    if (derivedKyc && !person.kycOk) {
+      person.kycOk = true;
+      kycDelta = 1;
+    }
+
+    // Если совсем ничего не изменилось — вернём deduped:true
+    const nothingChanged =
+      countDelta === 0 &&
+      kycDelta === 0 &&
+      Object.values(ageDelta).reduce((a, v) => a + (v || 0), 0) === 0 &&
+      // region/country тоже не изменились (если пришли)
+      (!derivedRegion || derivedRegion === (person.region || derivedRegion)) &&
+      (!derivedCountry ||
+        derivedCountry === (person.country || derivedCountry));
+
+    // Сохраняем людей
+    if (firstTime) people.push(person);
+    savePeople(survey, people);
+
+    // Если изменений нет — можно ответить "deduped"
+    if (nothingChanged) {
+      return res.json({
+        ok: true,
+        deduped: true,
+        applied: {
+          countDelta: 0,
+          kycDelta: 0,
+          ageDelta: {},
+          region: person.region || "Unknown",
+          country: person.country || "",
+        },
+      });
+    }
+
+    // --- apply deltas to analytics (region для строки — из person, а не из derived) ---
+    const regionForRow = person.region || "Unknown";
+    const countryForRow = person.country || "";
+    const updated = applyAggDeltas(
       survey,
-      region || "Unknown",
-      countryCode || null,
-      ageKey,
-      kyc_ok
+      regionForRow,
+      countryForRow,
+      countDelta,
+      kycDelta,
+      ageDelta
     );
 
-    return res.json({ ok: true, ageBucket: ageKey, region, kyc_ok });
+    // --- SSE: шлём именно дельты ---
+    sseBroadcast(survey, {
+      type: "append",
+      row: {
+        region: regionForRow,
+        country: countryForRow,
+        count: countDelta,
+        kycOk: kycDelta,
+        ageBuckets: ageDelta,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      applied: {
+        countDelta,
+        kycDelta,
+        ageDelta,
+        region: regionForRow,
+        country: countryForRow,
+      },
+      totals: {
+        updatedAt: updated.updatedAt,
+        total: updated.total,
+        eligible: updated.eligible,
+        kycOk: updated.kycOk,
+      },
+    });
   } catch (e: any) {
     console.error("ingest error", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
-// ------- EIP-712 подпись -------
-//
-// body: { user:"0x..", survey:"0x..", nullifier:"0x..", deadline: <unixSec> }
-// return: { signature, domain, types }
-//
+// ---- EIP-712 подпись ----
 app.post("/api/eligibility/sign", async (req, res) => {
   try {
     requireEnvReady();
@@ -444,6 +533,7 @@ app.post("/api/eligibility/sign", async (req, res) => {
 
     const domain: TypedDataDomain = { ...EIP712_DOMAIN };
 
+    // Разрешаем переопределить verifyingContract (как в фронте)
     if (req.body?.gate && ethers.isAddress(String(req.body.gate))) {
       domain.verifyingContract = String(req.body.gate).toLowerCase();
     }
@@ -455,40 +545,37 @@ app.post("/api/eligibility/sign", async (req, res) => {
       deadline,
       chainId: domain.chainId,
     };
-
     const signature = await signer.signTypedData(domain, EIP712_TYPES, value);
 
-    return res.json({
-      ok: true,
-      signature,
-      domain,
-      types: EIP712_TYPES,
-    });
+    return res.json({ ok: true, signature, domain, types: EIP712_TYPES });
   } catch (e: any) {
     console.error("sign error", e);
     return res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
-app.get("/api/analytics/:survey", (req, res) => {
-  const survey = String(req.params.survey || "").toLowerCase();
-  const f = path.join(anaDir, `${survey}.json`);
-  const data = readJSON(f, emptyAnalytics());
-  res.json(data);
-});
+// ---- Analytics (с алиасом .json для фронта) ----
+app.get(
+  ["/api/analytics/:survey", "/api/analytics/:survey.json"],
+  (req, res) => {
+    const survey = String(req.params.survey || "").toLowerCase();
+    const f = anaPath(survey);
+    const data = readJSON(f, emptyAnalytics());
+    res.json(data);
+  }
+);
 
-app.get("/api/gates.json", (req, res) => {
+// ---- Gates/config ----
+app.get("/api/gates.json", (_req, res) => {
   res.json({
     updatedAt: nowSec(),
-    eip712: {
-      domain: EIP712_DOMAIN,
-      types: EIP712_TYPES,
-    },
+    eip712: { domain: EIP712_DOMAIN, types: EIP712_TYPES },
     zkpass: ZKCONF,
     k_anonymity: K_ANONYMITY,
   });
 });
 
+// ---- SSE (live) ----
 app.get("/api/stream/:survey", (req, res) => {
   const survey = String(req.params.survey || "").toLowerCase();
   res.writeHead(200, {
@@ -508,9 +595,10 @@ app.get("/api/stream/:survey", (req, res) => {
   });
 });
 
-// ---- Start
+// ---- Start ----
 app.listen(PORT, () => {
   console.log(`[attester] up on http://localhost:${PORT}`);
-  console.log(`[attester] CHAIN_ID=${CHAIN_ID} GATE=${GATE_ADDR}`);
+  console.log(`[attester] CHAIN_ID=${CHAIN_ID} GATE=${GATE_ADDR || "(unset)"}`);
   console.log(`[attester] OUTPUT_DIR=${OUTPUT_DIR}`);
+  console.log(`[attester] ZK schemas:`, ZKCONF.schemas);
 });
