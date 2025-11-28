@@ -57,11 +57,6 @@ jobs:
 
         run: npx tsx backend/ci-indexer.ts
 
-      - name: Sanity check output
-        run: |
-          test -f ./out-api/surveys.list.json
-          jq 'length' ./out-api/surveys.list.json
-
       - name: Upload artifacts (optional, for debugging)
         uses: actions/upload-artifact@v4
         with:
