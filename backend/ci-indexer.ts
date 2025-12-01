@@ -285,12 +285,18 @@ async function pushCardToWorker(card: any) {
   const state = readJSON(FILES.STATE, { lastBlock: 0 });
   const latest = await provider.getBlockNumber();
 
-  const fromByState = Number(state.lastBlock || 0) + 1;
-  const fromByStart = Math.max(Number(START_BLOCK) || 0, 0);
   const fromByTail = ONLY_LAST_BLOCKS
     ? Math.max(latest - ONLY_LAST_BLOCKS + 1, 0)
     : 0;
-  const fromBlock = Math.max(fromByState, fromByStart, fromByTail);
+
+  // Приоритет: ONLY_LAST_BLOCKS > START_BLOCK > state
+  let fromBlock = fromByTail;
+  if (!ONLY_LAST_BLOCKS) {
+    const fromByStart = Math.max(Number(START_BLOCK) || 0, 0);
+    const fromByState = Number(state.lastBlock || 0) + 1;
+    fromBlock = Math.max(fromByStart, fromByState);
+  }
+  fromBlock = Math.max(fromBlock, 0);
   const toBlock = latest;
 
   console.log(`[Indexer] Scan: ${fromBlock} → ${toBlock}`);
@@ -528,18 +534,38 @@ async function pushCardToWorker(card: any) {
   // Push to Worker
   if (API_BASE && ADMIN_TOKEN) {
     console.log("[Push] Uploading to Worker...");
+    // Сравним с предыдущим списком, чтобы пушить только изменения
+    const prevList: any[] = readJSON(FILES.LIST, []);
+    const prevMap = new Map(
+      prevList.map((c: any) => [c.address.toLowerCase(), c])
+    );
+
     for (const card of list) {
       const addr = card.address.toLowerCase();
+      const prevCard = prevMap.get(addr);
       const metaPath = path.join(metaDir, `${addr}.json`);
       let meta = null;
+
+      // Пушим meta, только если файл существует и (новый опрос или metaValid изменился)
       if (fs.existsSync(metaPath)) {
         try {
           meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
         } catch {}
       }
-      if (meta) await pushMetaToWorker(addr, CHAIN_ID, meta);
-      await pushCardToWorker(card);
-      await new Promise((r) => setTimeout(r, 100));
+
+      const isNew = !prevCard;
+      const metaValidChanged = prevCard?.metaValid !== card.metaValid;
+
+      if (meta && (isNew || metaValidChanged)) {
+        await pushMetaToWorker(addr, CHAIN_ID, meta);
+      }
+
+      // Пушим card, только если он новый или статус/metaValid изменились
+      if (isNew || metaValidChanged || prevCard?.status !== card.status) {
+        await pushCardToWorker(card);
+      }
+
+      await new Promise((r) => setTimeout(r, 400)); // ← увеличено с 100 до 400 мс
     }
   }
 

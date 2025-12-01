@@ -4,7 +4,7 @@ name: indexer
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *" # каждые 10 минут
+    - cron: "*/2 * * * *" # каждые 10 минут
   push:
     paths:
       - "backend/**"
@@ -46,7 +46,7 @@ jobs:
           FACTORY_ADDRESS: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
 
           # Опционально: START_BLOCK можно задать вручную или убрать
-          START_BLOCK: "12570232"
+          ONLY_LAST_BLOCKS: "2000"
 
           # Cloudflare Worker API (без /api на конце!)
           API_BASE: ${{ secrets.API_BASE }} # ← должно быть: https://api.dscope.app
