@@ -405,7 +405,7 @@ const {
   epoch: undefined,
 };
 
-    let valid = metaValid;
+    let valid = initialMetaValid;
     if (meta && rec.metaHash) {
       try {
         const localCanon = canonicalize(meta);
