@@ -156,25 +156,12 @@ function ensureOutputs() {
 const appendLedger = (o: any) =>
   fs.appendFileSync(FILES.LEDGER, JSON.stringify(o) + "\n");
 
-// ---------- Meta enrich ----------
-function readLocalMeta(surveyAddr: string) {
-  const localPath = path.join(metaDir, `${surveyAddr}.json`);
-  const base = {
-    meta: null,
-    metaValid: false,
-    title: "Untitled",
-    summary: "",
-    image: "",
-    plannedRewardEth: "0",
-    plannedRewardWei: "0",
-    metaUrl: `${API_BASE}/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
-    gateAddr: "",
-    predicatesRaw: null,
-    epoch: undefined,
-  };
-  if (!fs.existsSync(localPath)) return base;
+async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
+  const url = `${API_BASE}/api/meta/${chainId}/${surveyAddr}.json`;
   try {
-    const meta = JSON.parse(fs.readFileSync(localPath, "utf8"));
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return null;
+    const meta = await res.json();
     const plannedRewardEth = (meta?.plannedReward ?? "0").toString();
     let plannedRewardWei = "0";
     try {
@@ -182,22 +169,22 @@ function readLocalMeta(surveyAddr: string) {
     } catch {}
     return {
       meta,
-      metaValid: false,
+      metaValid: true, // валидность проверим ниже по metaHash
       title: (meta?.title ?? "Untitled").toString(),
       summary: (meta?.summary ?? "").toString(),
       image: (meta?.image ?? "").toString(),
       plannedRewardEth,
       plannedRewardWei,
-      metaUrl: `${API_BASE}/api/meta/${CHAIN_ID}/${surveyAddr}.json`,
+      metaUrl: `${API_BASE}/api/meta/${chainId}/${surveyAddr}.json`,
       gateAddr: (meta?.gate?.addr ?? meta?.gateAddr ?? "").toString(),
       predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
       epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
     };
-  } catch {
-    return base;
+  } catch (e) {
+    console.warn(`Failed to fetch meta for ${surveyAddr}:`, e);
+    return null;
   }
 }
-
 // ---------- Funding submissions ----------
 function readFundingSubmissions(): FundingSubmission[] {
   const list: FundingSubmission[] = [];
@@ -391,19 +378,32 @@ async function pushCardToWorker(card: any) {
   // -------- Enrich with META --------
   for (const sAddr of Array.from(knownSurveyAddrs)) {
     const rec = surveys[sAddr] || (surveys[sAddr] = {});
-    const {
-      meta,
-      metaValid,
-      title,
-      summary,
-      image,
-      plannedRewardEth,
-      plannedRewardWei,
-      metaUrl,
-      gateAddr,
-      predicatesRaw,
-      epoch,
-    } = readLocalMeta(sAddr);
+    const metaResult = await fetchMetaFromWorker(sAddr, CHAIN_ID);
+const {
+  meta,
+  metaValid: initialMetaValid,
+  title,
+  summary,
+  image,
+  plannedRewardEth,
+  plannedRewardWei,
+  metaUrl,
+  gateAddr,
+  predicatesRaw,
+  epoch,
+} = metaResult || {
+  meta: null,
+  metaValid: false,
+  title: "Untitled",
+  summary: "",
+  image: "",
+  plannedRewardEth: "0",
+  plannedRewardWei: "0",
+  metaUrl: `${API_BASE}/api/meta/${CHAIN_ID}/${sAddr}.json`,
+  gateAddr: "",
+  predicatesRaw: null,
+  epoch: undefined,
+};
 
     let valid = metaValid;
     if (meta && rec.metaHash) {
@@ -531,43 +531,38 @@ async function pushCardToWorker(card: any) {
     )
   );
 
-  // Push to Worker
-  if (API_BASE && ADMIN_TOKEN) {
-    console.log("[Push] Uploading to Worker...");
-    // Сравним с предыдущим списком, чтобы пушить только изменения
-    const prevList: any[] = readJSON(FILES.LIST, []);
-    const prevMap = new Map(
-      prevList.map((c: any) => [c.address.toLowerCase(), c])
-    );
+  // Push FULL list to Worker (atomically)
+if (API_BASE && ADMIN_TOKEN) {
+  console.log(`[Push] Uploading full list of ${list.length} surveys to Worker...`);
 
-    for (const card of list) {
-      const addr = card.address.toLowerCase();
-      const prevCard = prevMap.get(addr);
-      const metaPath = path.join(metaDir, `${addr}.json`);
-      let meta = null;
-
-      // Пушим meta, только если файл существует и (новый опрос или metaValid изменился)
-      if (fs.existsSync(metaPath)) {
-        try {
-          meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-        } catch {}
+  // 1. Сначала пушим все meta-файлы для валидных опросов
+  for (const card of list) {
+    if (!card.metaValid) continue; // не пушим невалидные
+    try {
+      // Получаем meta, как мы его уже прочитали ранее (из fetchMetaFromWorker)
+      // Но чтобы не дублировать логику — читаем из локального surveys
+      const surveyRecord = surveys[card.address.toLowerCase()];
+      if (surveyRecord?.meta) {
+        await pushMetaToWorker(card.address, CHAIN_ID, surveyRecord.meta);
+        await new Promise((r) => setTimeout(r, 200)); // небольшая задержка
       }
-
-      const isNew = !prevCard;
-      const metaValidChanged = prevCard?.metaValid !== card.metaValid;
-
-      if (meta && (isNew || metaValidChanged)) {
-        await pushMetaToWorker(addr, CHAIN_ID, meta);
-      }
-
-      // Пушим card, только если он новый или статус/metaValid изменились
-      if (isNew || metaValidChanged || prevCard?.status !== card.status) {
-        await pushCardToWorker(card);
-      }
-
-      await new Promise((r) => setTimeout(r, 400)); // ← увеличено с 100 до 400 мс
+    } catch (e) {
+      console.warn(`[Push] Failed to push meta for ${card.address}:`, e);
     }
   }
+
+  // 2. Потом атомарно заменяем ВЕСЬ surveys.list.json
+  try {
+    await httpPostJSON(
+      `${API_BASE}/admin/list.replace`,
+      list,
+      { Authorization: `Bearer ${ADMIN_TOKEN}` }
+    );
+    console.log("[Push] ✅ Successfully replaced surveys.list.json on Worker");
+  } catch (e) {
+    console.error("[Push] ❌ Failed to replace list on Worker:", e);
+  }
+}
 
   console.log(`[Indexer] Done. Surveys: ${list.length}`);
 })().catch((e) => {
