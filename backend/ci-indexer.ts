@@ -157,7 +157,7 @@ const appendLedger = (o: any) =>
   fs.appendFileSync(FILES.LEDGER, JSON.stringify(o) + "\n");
 
 async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
-  const url = `${API_BASE}/api/meta/${chainId}/${surveyAddr}.json`;
+  const url = `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
@@ -175,7 +175,7 @@ async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
       image: (meta?.image ?? "").toString(),
       plannedRewardEth,
       plannedRewardWei,
-      metaUrl: `${API_BASE}/api/meta/${chainId}/${surveyAddr}.json`,
+      metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
       gateAddr: (meta?.gate?.addr ?? meta?.gateAddr ?? "").toString(),
       predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
       epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
@@ -399,7 +399,7 @@ const {
   image: "",
   plannedRewardEth: "0",
   plannedRewardWei: "0",
-  metaUrl: `${API_BASE}/api/meta/${CHAIN_ID}/${sAddr}.json`,
+  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
   gateAddr: "",
   predicatesRaw: null,
   epoch: undefined,
