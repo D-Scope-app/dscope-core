@@ -157,26 +157,33 @@ const appendLedger = (o: any) =>
   fs.appendFileSync(FILES.LEDGER, JSON.stringify(o) + "\n");
 
 async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
-  const url = `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
+  const url = `${API_BASE}/meta/${chainId}/${surveyAddr}.json`;
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
     const meta = await res.json();
+
     const plannedRewardEth = (meta?.plannedReward ?? "0").toString();
     let plannedRewardWei = "0";
     try {
       plannedRewardWei = parseEther(plannedRewardEth).toString();
     } catch {}
+
+    // 🔑 Читаем gateAddr и predicatesRaw из meta
+    const gateAddr = (meta?.gate?.addr ?? "").toString();
+    const predicatesRaw = meta?.predicates ?? meta?.gate?.predicates ?? null;
+
     return {
       meta,
-      metaValid: true, // валидность проверим ниже по metaHash
+      metaValid: true,
       title: (meta?.title ?? "Untitled").toString(),
       summary: (meta?.summary ?? "").toString(),
       image: (meta?.image ?? "").toString(),
       plannedRewardEth,
       plannedRewardWei,
-      metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
-      predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
+      metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`,
+      gateAddr,          // ← возвращаем как часть metaResult
+      predicatesRaw,     // ← возвращаем как часть metaResult
       epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
     };
   } catch (e) {
@@ -387,7 +394,8 @@ const {
   plannedRewardEth,
   plannedRewardWei,
   metaUrl,
-  predicatesRaw,
+  gateAddr,          // ← теперь безопасно: поле есть в metaResult
+  predicatesRaw,     // ← и это тоже
   epoch,
 } = metaResult || {
   meta: null,
@@ -397,12 +405,11 @@ const {
   image: "",
   plannedRewardEth: "0",
   plannedRewardWei: "0",
-  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`,
+  metaUrl: `${API_BASE}/meta/${CHAIN_ID}/${sAddr}.json`,
+  gateAddr: "",
   predicatesRaw: null,
   epoch: undefined,
 };
-
-    const gateAddr = (meta?.gate?.addr ?? "").toString();
     
     let valid = initialMetaValid;
     if (meta && rec.metaHash) {
