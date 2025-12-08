@@ -399,7 +399,7 @@ const {
   image: "",
   plannedRewardEth: "0",
   plannedRewardWei: "0",
-  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
+  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`,
   gateAddr: "",
   predicatesRaw: null,
   epoch: undefined,
