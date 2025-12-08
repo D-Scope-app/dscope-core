@@ -38,10 +38,15 @@ function readJSON<T = any>(p: string, fallback: T): T {
   }
 }
 function canonicalize(obj: any) {
-  const keys = Object.keys(obj || {}).sort();
-  const out: any = {};
-  for (const k of keys) out[k] = obj[k];
-  return JSON.stringify(out);
+  const sort = (v: any) =>
+    Array.isArray(v)
+      ? v.map(sort)
+      : v && typeof v === "object"
+      ? Object.keys(v)
+          .sort()
+          .reduce((a: any, k: string) => ((a[k] = sort(v[k])), a), {})
+      : v;
+  return JSON.stringify(sort(obj));
 }
 function toSec(x: any) {
   const n = Number(x || 0);
