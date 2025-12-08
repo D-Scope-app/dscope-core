@@ -176,7 +176,6 @@ async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
       plannedRewardEth,
       plannedRewardWei,
       metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`
-      gateAddr: (meta?.gate?.addr ?? meta?.gateAddr ?? "").toString(),
       predicatesRaw: meta?.predicates ?? meta?.gate?.predicates ?? null,
       epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
     };
@@ -388,7 +387,6 @@ const {
   plannedRewardEth,
   plannedRewardWei,
   metaUrl,
-  gateAddr,
   predicatesRaw,
   epoch,
 } = metaResult || {
@@ -400,11 +398,12 @@ const {
   plannedRewardEth: "0",
   plannedRewardWei: "0",
   metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`,
-  gateAddr: "",
   predicatesRaw: null,
   epoch: undefined,
 };
 
+    const gateAddr = (meta?.gate?.addr ?? "").toString();
+    
     let valid = initialMetaValid;
     if (meta && rec.metaHash) {
       try {
