@@ -186,7 +186,7 @@ async function fetchMetaFromWorker(surveyAddr: string, chainId: number) {
       image: (meta?.image ?? "").toString(),
       plannedRewardEth,
       plannedRewardWei,
-      metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`.trim()
+      metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`.trim(),
       gateAddr,          // ← возвращаем как часть metaResult
       predicatesRaw,     // ← возвращаем как часть metaResult
       epoch: meta?.gate?.epoch ? String(meta.gate.epoch) : undefined,
@@ -410,7 +410,7 @@ const {
   image: "",
   plannedRewardEth: "0",
   plannedRewardWei: "0",
-  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`.trim()
+  metaUrl: `${API_BASE}/meta/${chainId}/${surveyAddr}.json`.trim(),
   gateAddr: "",
   predicatesRaw: null,
   epoch: undefined,
