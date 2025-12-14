@@ -43,7 +43,7 @@ jobs:
           SCROLL_RPC: ${{ secrets.SCROLL_RPC }}
 
           # Contract address (единственный источник истины)
-          FACTORY_ADDRESS: "0x25465982fD4A87054c69d874cd6D89f69e1DE35c"
+          FACTORY_ADDRESS: "0xdFC8315C734ca960C145b16526588cec1C820Ba8"
 
           # Опционально: START_BLOCK можно задать вручную или убрать
           ONLY_LAST_BLOCKS: "2000"
