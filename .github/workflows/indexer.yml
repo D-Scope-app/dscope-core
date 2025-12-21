@@ -4,7 +4,7 @@ name: indexer
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/2 * * * *" # каждые 10 минут
+    - cron: "*/2 * * * *" 
   push:
     paths:
       - "backend/**"
@@ -42,17 +42,17 @@ jobs:
           CHAIN_ID: "534351"
           SCROLL_RPC: ${{ secrets.SCROLL_RPC }}
 
-          # Contract address (единственный источник истины)
+          # Contract address 
           FACTORY_ADDRESS: "0x7da8Ed6956140c2AC7daD610C4E03D5256247E3c"
 
-          # Опционально: START_BLOCK можно задать вручную или убрать
+          
           ONLY_LAST_BLOCKS: "2000"
 
-          # Cloudflare Worker API (без /api на конце!)
+          
           API_BASE: ${{ secrets.API_BASE }} # ← должно быть: https://api.dscope.app
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }} # ← тот же токен, что в Worker Settings
 
-          # Output dir для артефактов (локально в CI)
+          
           OUTPUT_DIR: "./out-api"
 
         run: npx tsx backend/ci-indexer.ts
