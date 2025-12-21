@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../gate/IEligibilityGate.sol";
+import "../gate/ZkPassEligibilityGate.sol";
 
 contract Survey {
     enum SurveyType { MULTIPLE_CHOICE, BINARY_VOTE }
@@ -17,7 +17,7 @@ contract Survey {
 
     // --- Core metadata/state
     address public creator;
-    address public gate; // eligibility gate (EIP-712 attester)
+    address public gate; // eligibility gate (zkPass canonical gate)
     SurveyType public surveyType;
     uint256 public startTime;
     uint256 public endTime;
@@ -35,8 +35,8 @@ contract Survey {
     address[] public participants;
     mapping(address => bool) public hasParticipated;
 
-    // --- anti-replay for zkpass-lite
-    mapping(bytes32 => bool) public nullifierUsed;
+    // --- REMOVED: anti-replay for zkpass-lite (handled in gate)
+    // mapping(bytes32 => bool) public nullifierUsed;
 
     // --- Prize-pool events
     event PrizeFunded(address indexed funder, uint256 amount);
@@ -111,19 +111,13 @@ contract Survey {
         _voteCommon(selectedOptionsPerQuestion);
     }
 
-    // ----- Voting with zkpass-lite proof -----
-    function voteWithProof(
-        uint[][] calldata selectedOptionsPerQuestion,
-        bytes32 nullifier,
-        uint256 deadline,
-        bytes calldata sig
-    ) external {
+    // ----- Voting with zkPass eligibility (on-chain verified) -----
+    function voteWithGate(uint[][] calldata selectedOptionsPerQuestion) external {
         require(gate != address(0), "NO_GATE");
-        require(!nullifierUsed[nullifier], "NullifierUsed");
 
-        bool ok = IEligibilityGate(gate).verify(msg.sender, address(this), nullifier, deadline, sig);
-        require(ok, "InvalidProof");
-        nullifierUsed[nullifier] = true;
+        // ЕДИНСТВЕННАЯ проверка: eligibility via gate
+        bool eligible = ZkPassEligibilityGate(gate).checkEligibility(msg.sender, address(this));
+        require(eligible, "Not eligible");
 
         _voteCommon(selectedOptionsPerQuestion);
     }
